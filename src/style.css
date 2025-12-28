@@ -45,4 +45,49 @@ body {
 .fecha, .fecha-hoy, .dateBadge, .chip-fecha {
   min-width: 0; /* clave para que el ellipsis funcione en flex */
 }
+/* Ajuste general para modo app (iPhone / Android) */
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  background: #f5f5f5;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+/* Contenedor principal */
+.app-container {
+  width: 100%;
+  max-width: 420px;
+  padding: env(safe-area-inset-top) 16px 24px;
+  box-sizing: border-box;
+}
+
+/* Tarjeta superior roja */
+.header-card {
+  margin-top: 10px;
+  padding: 16px;
+  border-radius: 20px;
+}
+
+/* Fecha centrada y que no se salga */
+.fecha-hoy {
+  text-align: center;
+  font-size: 14px;
+  white-space: normal;
+}
+
+/* Estado centrado */
+.estado-box {
+  text-align: center;
+  margin-top: 8px;
+}
+
+/* Botones */
+button {
+  width: 100%;
+  max-width: 100%;
+}
+
 
