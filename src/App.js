@@ -196,15 +196,15 @@ function exportarXLSX({
 export default function App() {
   const [session, setSession] = useState(null);
 
-  // LOGIN
+  // login
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
-  // RECUPERAR / NUEVA CLAVE
-  const [authView, setAuthView] = useState('LOGIN'); // LOGIN | RESET | NEWPASS
+  // reset password
+  const [authView, setAuthView] = useState('LOGIN'); // LOGIN | RESET_REQUEST | RESET_SET
   const [resetEmail, setResetEmail] = useState('');
-  const [newPass, setNewPass] = useState('');
-  const [newPass2, setNewPass2] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [newPassword2, setNewPassword2] = useState('');
 
   const [profile, setProfile] = useState(null);
   const [msg, setMsg] = useState('');
@@ -269,25 +269,19 @@ export default function App() {
     )}`;
   }, [now]);
 
-  const isRecoveryLink = useMemo(() => {
-    const hash = String(window.location.hash || '');
-    const search = String(window.location.search || '');
-    return (
-      hash.includes('type=recovery') ||
-      hash.includes('access_token=') ||
-      search.includes('type=recovery') ||
-      search.includes('access_token=')
-    );
-  }, []);
-
   /* -------- Auth -------- */
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session ?? null);
-      if (data.session && isRecoveryLink) setAuthView('NEWPASS');
     });
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, newSession) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
+      // Cuando el usuario abre el enlace del correo de recuperación:
+      if (event === 'PASSWORD_RECOVERY') {
+        setAuthView('RESET_SET');
+        setMsg('🔐 Introduce tu nueva contraseña');
+      }
+
       setSession(newSession);
       setProfile(null);
       setAbiertoTrabajo(null);
@@ -301,14 +295,9 @@ export default function App() {
       setEmpleadoNombre('');
       setNota('');
       setTab('FICHAR');
-      setMsg('');
-
-      if (newSession && isRecoveryLink) setAuthView('NEWPASS');
-      if (!newSession) setAuthView('LOGIN');
     });
 
     return () => sub.subscription.unsubscribe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /* -------- Perfil -------- */
@@ -327,6 +316,7 @@ export default function App() {
       else {
         setProfile(data);
         setMsg('OK ✅');
+        setAuthView('LOGIN');
       }
     };
     run();
@@ -386,7 +376,7 @@ export default function App() {
     if (!empleadoObjetivoId) return;
     const fecha = fechaLocalYYYYMMDD();
 
-    // Trabajo abierto (solo tipo Trabajo)
+    // Trabajo abierto
     const { data: tOpen } = await supabase
       .from('registros')
       .select('id, entrada, tipo')
@@ -502,61 +492,49 @@ export default function App() {
     setAuthView('LOGIN');
   };
 
-  /* -------- Recuperar contraseña -------- */
-  const enviarRecuperacion = async () => {
-    const correo = (resetEmail || '').trim();
-    if (!correo) {
-      setMsg('Pon tu email para recuperar la contraseña.');
+  /* -------- Reset password -------- */
+  const enviarResetPassword = async () => {
+    const mail = (resetEmail || '').trim();
+    if (!mail) {
+      setMsg('Escribe tu email para recuperar la contraseña.');
       return;
     }
 
     setBusy(true);
     try {
-      // IMPORTANTE: deja tu dominio de Vercel aquí si quieres.
-      // Si lo dejas así, Supabase suele usar el "Site URL" configurado en Supabase.
-      const redirectTo = window.location.origin;
-
-      const { error } = await supabase.auth.resetPasswordForEmail(correo, {
-        redirectTo,
+      setMsg('Enviando email...');
+      const { error } = await supabase.auth.resetPasswordForEmail(mail, {
+        // debe ser tu dominio real (Vercel). Esto es CRÍTICO para iPhone.
+        redirectTo: window.location.origin,
       });
-
       if (error) setMsg('ERROR: ' + error.message);
-      else setMsg('✅ Te he enviado un email para restablecer la contraseña.');
+      else setMsg('✅ Te hemos enviado un email. Ábrelo y sigue el enlace.');
     } finally {
       setBusy(false);
     }
   };
 
-  /* -------- Cambiar contraseña desde enlace -------- */
-  const cambiarPassword = async () => {
-    if (!newPass || newPass.length < 6) {
+  const guardarNuevaPassword = async () => {
+    if (!newPassword || newPassword.length < 6) {
       setMsg('La contraseña debe tener al menos 6 caracteres.');
       return;
     }
-    if (newPass !== newPass2) {
+    if (newPassword !== newPassword2) {
       setMsg('Las contraseñas no coinciden.');
       return;
     }
 
     setBusy(true);
     try {
-      const { error } = await supabase.auth.updateUser({ password: newPass });
-      if (error) {
-        setMsg('ERROR: ' + error.message);
-        return;
+      setMsg('Guardando contraseña...');
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) setMsg('ERROR: ' + error.message);
+      else {
+        setMsg('✅ Contraseña actualizada. Ya puedes entrar.');
+        setAuthView('LOGIN');
+        setNewPassword('');
+        setNewPassword2('');
       }
-
-      setMsg('✅ Contraseña actualizada. Ya puedes usar la app.');
-      setNewPass('');
-      setNewPass2('');
-
-      // Limpia la URL (quita tokens)
-      try {
-        window.history.replaceState({}, document.title, window.location.pathname);
-      } catch {}
-
-      setAuthView('LOGIN');
-      await logout(); // fuerza volver a login limpio
     } finally {
       setBusy(false);
     }
@@ -643,7 +621,7 @@ export default function App() {
     }
   }
 
-  // Iniciar pausa: cierra Trabajo y abre Pausa (para cumplir “1 abierto”)
+  // Iniciar pausa: cierra Trabajo y abre Pausa
   async function iniciarPausa() {
     if (!profile?.empleado_id) return;
     if (!estoyViendoMiEmpleado) return;
@@ -777,16 +755,20 @@ export default function App() {
 
   const s = {
     page: {
-      minHeight: '100vh',
+      minHeight: '100dvh',
       background: C.fondo,
       fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, Arial',
-      padding: 14,
+      padding: 'calc(14px + env(safe-area-inset-top)) 14px 14px',
       color: C.negro,
+      boxSizing: 'border-box',
+      overflowX: 'hidden',
     },
     shell: {
+      width: '100%',
       maxWidth: 480,
       margin: '0 auto',
       paddingBottom: 120,
+      boxSizing: 'border-box',
     },
     header: {
       background: C.rojo,
@@ -794,12 +776,14 @@ export default function App() {
       borderRadius: 18,
       padding: 14,
       boxShadow: '0 10px 25px rgba(0,0,0,.08)',
+      boxSizing: 'border-box',
     },
     headerTop: {
       display: 'flex',
       alignItems: 'flex-start',
       justifyContent: 'space-between',
       gap: 10,
+      flexWrap: 'wrap',
     },
     brand: { display: 'flex', flexDirection: 'column', gap: 2 },
     brandName: { fontWeight: 900, fontSize: 22, lineHeight: 1.1 },
@@ -811,10 +795,12 @@ export default function App() {
       borderRadius: 999,
       fontSize: 12,
       fontWeight: 800,
-      maxWidth: 210,
+      maxWidth: '100%',
       textAlign: 'right',
       whiteSpace: 'normal',
       lineHeight: 1.15,
+      overflow: 'hidden',
+      boxSizing: 'border-box',
     },
     clock: {
       marginTop: 10,
@@ -822,6 +808,7 @@ export default function App() {
       gap: 12,
       alignItems: 'stretch',
       justifyContent: 'space-between',
+      flexWrap: 'wrap',
     },
     clockBig: {
       fontSize: 34,
@@ -837,10 +824,12 @@ export default function App() {
       fontSize: 12,
       fontWeight: 900,
       textAlign: 'right',
-      minWidth: 170,
+      flex: '1 1 160px',
+      maxWidth: '100%',
       display: 'flex',
       flexDirection: 'column',
       justifyContent: 'center',
+      boxSizing: 'border-box',
     },
     tabs: { marginTop: 12, display: 'flex', gap: 10 },
     tabBtn: (active) => ({
@@ -860,6 +849,7 @@ export default function App() {
       borderRadius: 18,
       padding: 14,
       boxShadow: '0 10px 25px rgba(0,0,0,.04)',
+      boxSizing: 'border-box',
     },
     row: { display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' },
     label: { fontSize: 12, fontWeight: 900, color: C.gris },
@@ -967,14 +957,14 @@ export default function App() {
     },
 
     linkBtn: {
-      background: 'transparent',
       border: 'none',
+      background: 'transparent',
       padding: 0,
-      margin: 0,
+      marginTop: 8,
       color: C.rojo,
       fontWeight: 900,
-      cursor: 'pointer',
       textAlign: 'left',
+      cursor: 'pointer',
     },
   };
 
@@ -1026,12 +1016,13 @@ export default function App() {
           </div>
 
           <div style={s.clock}>
-            <div>
+            <div style={{ flex: '1 1 160px', minWidth: 160 }}>
               <div style={{ fontSize: 12, opacity: 0.9, fontWeight: 800 }}>
                 Hora actual
               </div>
               <div style={s.clockBig}>{horaGrande}</div>
             </div>
+
             <div style={s.statusPill}>
               <div style={{ opacity: 0.9 }}>Estado</div>
               <div style={{ marginTop: 4 }}>{estadoTexto}</div>
@@ -1042,26 +1033,107 @@ export default function App() {
             <button
               style={s.tabBtn(tab === 'FICHAR')}
               onClick={() => setTab('FICHAR')}
-              disabled={!session || authView === 'NEWPASS'}
+              disabled={!session}
             >
               Inicio
             </button>
             <button
               style={s.tabBtn(tab === 'HISTORICO')}
               onClick={() => setTab('HISTORICO')}
-              disabled={!session || authView === 'NEWPASS'}
+              disabled={!session}
             >
               Histórico
             </button>
           </div>
         </div>
 
-        {/* =======================
-            NO SESSION: LOGIN / RESET
-           ======================= */}
+        {/* =========================
+            LOGIN / RECUPERAR / NUEVA PASS
+           ========================= */}
         {!session ? (
           <div style={s.loginBox}>
-            {authView === 'LOGIN' && (
+            {authView === 'RESET_SET' ? (
+              <>
+                <div style={{ fontWeight: 900, marginBottom: 10 }}>
+                  Nueva contraseña
+                </div>
+                <div style={{ display: 'grid', gap: 10 }}>
+                  <input
+                    style={s.input}
+                    placeholder="Nueva contraseña (mín. 6)"
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    disabled={busy}
+                  />
+                  <input
+                    style={s.input}
+                    placeholder="Repetir nueva contraseña"
+                    type="password"
+                    value={newPassword2}
+                    onChange={(e) => setNewPassword2(e.target.value)}
+                    disabled={busy}
+                  />
+                  <button
+                    style={btnStyle(busy, 'primary')}
+                    onClick={guardarNuevaPassword}
+                    disabled={busy}
+                  >
+                    Guardar
+                  </button>
+
+                  <button
+                    style={s.linkBtn}
+                    onClick={() => {
+                      setAuthView('LOGIN');
+                      setMsg('');
+                      setNewPassword('');
+                      setNewPassword2('');
+                    }}
+                    disabled={busy}
+                  >
+                    Volver a iniciar sesión
+                  </button>
+
+                  <div style={s.small}>{msg}</div>
+                </div>
+              </>
+            ) : authView === 'RESET_REQUEST' ? (
+              <>
+                <div style={{ fontWeight: 900, marginBottom: 10 }}>
+                  Recuperar contraseña
+                </div>
+                <div style={{ display: 'grid', gap: 10 }}>
+                  <input
+                    style={s.input}
+                    placeholder="Tu email"
+                    value={resetEmail}
+                    onChange={(e) => setResetEmail(e.target.value)}
+                    disabled={busy}
+                  />
+                  <button
+                    style={btnStyle(busy, 'primary')}
+                    onClick={enviarResetPassword}
+                    disabled={busy}
+                  >
+                    Enviar email
+                  </button>
+
+                  <button
+                    style={s.linkBtn}
+                    onClick={() => {
+                      setAuthView('LOGIN');
+                      setMsg('');
+                    }}
+                    disabled={busy}
+                  >
+                    Volver
+                  </button>
+
+                  <div style={s.small}>{msg}</div>
+                </div>
+              </>
+            ) : (
               <>
                 <div style={{ fontWeight: 900, marginBottom: 10 }}>Acceso</div>
                 <div style={{ display: 'grid', gap: 10 }}>
@@ -1085,7 +1157,7 @@ export default function App() {
                   <button
                     style={s.linkBtn}
                     onClick={() => {
-                      setAuthView('RESET');
+                      setAuthView('RESET_REQUEST');
                       setResetEmail(email || '');
                       setMsg('');
                     }}
@@ -1097,339 +1169,252 @@ export default function App() {
                 </div>
               </>
             )}
-
-            {authView === 'RESET' && (
-              <>
-                <div style={{ fontWeight: 900, marginBottom: 10 }}>
-                  Recuperar contraseña
-                </div>
-                <div style={{ display: 'grid', gap: 10 }}>
-                  <input
-                    style={s.input}
-                    placeholder="Email"
-                    value={resetEmail}
-                    onChange={(e) => setResetEmail(e.target.value)}
-                  />
-                  <button
-                    style={btnStyle(busy, 'primary')}
-                    onClick={enviarRecuperacion}
-                    disabled={busy}
-                  >
-                    Enviar email
-                  </button>
-
-                  <button
-                    style={btnStyle(busy, 'ghost')}
-                    onClick={() => {
-                      setAuthView('LOGIN');
-                      setMsg('');
-                    }}
-                    disabled={busy}
-                  >
-                    Volver
-                  </button>
-
-                  <div style={s.small}>{msg}</div>
-                </div>
-              </>
-            )}
           </div>
         ) : (
-          /* =======================
-              SESSION: si viene de RECOVERY => NUEVA CLAVE
-             ======================= */
           <div style={s.card}>
-            {authView === 'NEWPASS' ? (
+            {/* Nombre del empleado */}
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                gap: 10,
+                alignItems: 'center',
+                flexWrap: 'wrap',
+              }}
+            >
+              <div style={s.employeePill}>
+                <span role="img" aria-label="user">
+                  👤
+                </span>
+                <span>{empleadoNombre || '(Sin nombre)'}</span>
+              </div>
+
+              <button
+                style={btnStyle(busy || loadingPeriodo, 'ghost')}
+                onClick={logout}
+                disabled={busy || loadingPeriodo}
+              >
+                Salir
+              </button>
+            </div>
+
+            <div style={s.hr} />
+
+            {profile?.es_admin && (
               <>
-                <div style={{ fontWeight: 900, marginBottom: 8 }}>
-                  Nueva contraseña
-                </div>
-                <div style={s.small}>
-                  Has entrado desde el enlace de recuperación. Elige una nueva
-                  contraseña.
-                </div>
-
-                <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
-                  <input
-                    style={s.input}
-                    type="password"
-                    placeholder="Nueva contraseña (mín. 6 caracteres)"
-                    value={newPass}
-                    onChange={(e) => setNewPass(e.target.value)}
-                  />
-                  <input
-                    style={s.input}
-                    type="password"
-                    placeholder="Repite la nueva contraseña"
-                    value={newPass2}
-                    onChange={(e) => setNewPass2(e.target.value)}
-                  />
-
-                  <button
-                    style={btnStyle(busy, 'primary')}
-                    onClick={cambiarPassword}
-                    disabled={busy}
-                  >
-                    Guardar contraseña
-                  </button>
-
-                  <button
-                    style={btnStyle(busy, 'ghost')}
-                    onClick={logout}
-                    disabled={busy}
-                  >
-                    Cancelar y salir
-                  </button>
-
-                  <div style={s.small}>{msg}</div>
-                </div>
-              </>
-            ) : (
-              <>
-                {/* Nombre del empleado + salir */}
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    gap: 10,
-                    alignItems: 'center',
-                  }}
-                >
-                  <div style={s.employeePill}>
-                    <span role="img" aria-label="user">
-                      👤
-                    </span>
-                    <span>{empleadoNombre || '(Sin nombre)'}</span>
+                <div style={{ ...s.row, justifyContent: 'space-between' }}>
+                  <div style={s.row}>
+                    <div style={s.label}>Empleado</div>
+                    <select
+                      style={s.select}
+                      value={empleadoSel}
+                      onChange={(e) => setEmpleadoSel(e.target.value)}
+                      disabled={busy || loadingPeriodo}
+                    >
+                      {empleados.map((em) => (
+                        <option key={em.id} value={em.id}>
+                          {em.nombre}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      style={btnStyle(busy || loadingPeriodo, 'ghost')}
+                      onClick={async () => {
+                        await cargarEstadoDia();
+                        await cargarPeriodo(modo, fechaSel);
+                      }}
+                      disabled={busy || loadingPeriodo}
+                    >
+                      Ver
+                    </button>
                   </div>
 
-                  <button
-                    style={btnStyle(busy || loadingPeriodo, 'ghost')}
-                    onClick={logout}
-                    disabled={busy || loadingPeriodo}
-                  >
-                    Cerrar sesión
-                  </button>
+                  {!estoyViendoMiEmpleado && (
+                    <div style={{ ...s.small, fontWeight: 900 }}>
+                      (Viendo otro empleado)
+                    </div>
+                  )}
                 </div>
 
                 <div style={s.hr} />
+              </>
+            )}
 
-                {profile?.es_admin && (
+            {tab === 'FICHAR' ? (
+              <div style={{ display: 'grid', gap: 12 }}>
+                <div>
+                  <div style={s.label}>Nota</div>
+                  <input
+                    style={s.input}
+                    placeholder="(Opcional) Se guardará en el próximo fichaje"
+                    value={nota}
+                    onChange={(e) => setNota(e.target.value)}
+                    disabled={!estoyViendoMiEmpleado || busy || loadingPeriodo}
+                  />
+                  <div style={{ ...s.small, marginTop: 6 }}>
+                    Ej.: motivo de ausencia, detalle del día, etc.
+                  </div>
+                </div>
+
+                <div style={s.msg}>{msg}</div>
+
+                <div style={s.hr} />
+
+                <div>
+                  <div style={{ fontWeight: 900, marginBottom: 8 }}>
+                    Registro de hoy
+                  </div>
+
+                  {hoy.length === 0 ? (
+                    <div style={s.small}>(Sin registros hoy)</div>
+                  ) : (
+                    <ul style={s.list}>
+                      {hoy.map((r) => (
+                        <li key={r.id} style={s.li}>
+                          <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b> —{' '}
+                          Salida: <b>{r.salida ?? '-'}</b>
+                          {r.nota ? ` — Nota: ${r.nota}` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  <div style={{ marginTop: 10, fontWeight: 900 }}>
+                    Total neto de hoy:{' '}
+                    <span style={{ color: C.rojo }}>{totalHoyHHMM}</span> h
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: 10 }}>
+                <div style={s.row}>
+                  <div style={s.label}>Periodo</div>
+                  <button
+                    style={btnStyle(modo === 'DIA' || loadingPeriodo, 'ghost')}
+                    onClick={() => setModo('DIA')}
+                    disabled={modo === 'DIA' || loadingPeriodo}
+                  >
+                    Día
+                  </button>
+                  <button
+                    style={btnStyle(modo === 'SEMANA' || loadingPeriodo, 'ghost')}
+                    onClick={() => setModo('SEMANA')}
+                    disabled={modo === 'SEMANA' || loadingPeriodo}
+                  >
+                    Semana
+                  </button>
+                  <button
+                    style={btnStyle(modo === 'MES' || loadingPeriodo, 'ghost')}
+                    onClick={() => setModo('MES')}
+                    disabled={modo === 'MES' || loadingPeriodo}
+                  >
+                    Mes
+                  </button>
+                </div>
+
+                <div style={s.row}>
+                  <div style={s.label}>Fecha</div>
+                  <input
+                    type="date"
+                    value={fechaSel}
+                    onChange={(e) => setFechaSel(e.target.value)}
+                    disabled={loadingPeriodo}
+                    style={{ ...s.input, maxWidth: 220 }}
+                  />
+                  <button
+                    style={btnStyle(loadingPeriodo, 'ghost')}
+                    onClick={() => setFechaSel(fechaLocalYYYYMMDD())}
+                    disabled={loadingPeriodo}
+                  >
+                    Hoy
+                  </button>
+
+                  <button
+                    style={btnStyle(loadingPeriodo, 'primary')}
+                    onClick={() =>
+                      exportarXLSX({
+                        empresaNombre: EMPRESA_NOMBRE_EXCEL,
+                        empleadoNombre: empleadoNombre,
+                        modo,
+                        fechaSel,
+                        registrosPeriodo,
+                        totalPeriodoHHMM,
+                      })
+                    }
+                    disabled={loadingPeriodo}
+                  >
+                    Exportar Excel
+                  </button>
+                </div>
+
+                <div style={s.small}>
+                  <b>
+                    Total{' '}
+                    {modo === 'DIA'
+                      ? 'del día'
+                      : modo === 'SEMANA'
+                      ? 'semanal'
+                      : 'mensual'}{' '}
+                    (neto):
+                  </b>{' '}
+                  {loadingPeriodo ? 'Cargando...' : `${totalPeriodoHHMM} horas`}
+                </div>
+
+                <div style={s.msg}>{msg}</div>
+
+                <div style={s.hr} />
+
+                {loadingPeriodo ? (
+                  <div style={s.small}>Cargando...</div>
+                ) : modo === 'DIA' ? (
+                  registrosPeriodo.length === 0 ? (
+                    <div style={s.small}>(Sin registros ese día)</div>
+                  ) : (
+                    <ul style={s.list}>
+                      {registrosPeriodo.map((r) => (
+                        <li key={r.id} style={s.li}>
+                          <b>{formatearFechaDDMMYYYY(r.fecha)}</b> —{' '}
+                          <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b> —{' '}
+                          Salida: <b>{r.salida ?? '-'}</b>
+                          {r.nota ? ` — Nota: ${r.nota}` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  )
+                ) : gruposPeriodo.length === 0 ? (
+                  <div style={s.small}>(Sin registros en el periodo)</div>
+                ) : (
                   <>
-                    <div style={{ ...s.row, justifyContent: 'space-between' }}>
-                      <div style={s.row}>
-                        <div style={s.label}>Empleado</div>
-                        <select
-                          style={s.select}
-                          value={empleadoSel}
-                          onChange={(e) => setEmpleadoSel(e.target.value)}
-                          disabled={busy || loadingPeriodo}
-                        >
-                          {empleados.map((em) => (
-                            <option key={em.id} value={em.id}>
-                              {em.nombre}
-                            </option>
-                          ))}
-                        </select>
-                        <button
-                          style={btnStyle(busy || loadingPeriodo, 'ghost')}
-                          onClick={async () => {
-                            await cargarEstadoDia();
-                            await cargarPeriodo(modo, fechaSel);
-                          }}
-                          disabled={busy || loadingPeriodo}
-                        >
-                          Ver
-                        </button>
-                      </div>
-
-                      {!estoyViendoMiEmpleado && (
-                        <div style={{ ...s.small, fontWeight: 900 }}>
-                          (Viendo otro empleado)
+                    {gruposPeriodo.map((g) => (
+                      <div key={g.fecha} style={{ marginBottom: 12 }}>
+                        <div style={{ fontWeight: 900 }}>
+                          {formatearFechaDDMMYYYY(g.fecha)} — Total neto:{' '}
+                          <span style={{ color: C.rojo }}>
+                            {minutesToHHMM(g.totalMin)}
+                          </span>{' '}
+                          h
                         </div>
-                      )}
-                    </div>
-
-                    <div style={s.hr} />
-                  </>
-                )}
-
-                {tab === 'FICHAR' ? (
-                  <div style={{ display: 'grid', gap: 12 }}>
-                    <div>
-                      <div style={s.label}>Nota</div>
-                      <input
-                        style={s.input}
-                        placeholder="(Opcional) Se guardará en el próximo fichaje"
-                        value={nota}
-                        onChange={(e) => setNota(e.target.value)}
-                        disabled={!estoyViendoMiEmpleado || busy || loadingPeriodo}
-                      />
-                      <div style={{ ...s.small, marginTop: 6 }}>
-                        Ej.: motivo de ausencia, detalle del día, etc.
-                      </div>
-                    </div>
-
-                    <div style={s.msg}>{msg}</div>
-
-                    <div style={s.hr} />
-
-                    <div>
-                      <div style={{ fontWeight: 900, marginBottom: 8 }}>
-                        Registro de hoy
-                      </div>
-
-                      {hoy.length === 0 ? (
-                        <div style={s.small}>(Sin registros hoy)</div>
-                      ) : (
-                        <ul style={s.list}>
-                          {hoy.map((r) => (
+                        <ul style={{ ...s.list, marginTop: 6 }}>
+                          {g.items.map((r) => (
                             <li key={r.id} style={s.li}>
-                              <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b> —
+                              {r.tipo} — Entrada: <b>{r.entrada ?? '-'}</b> —{' '}
                               Salida: <b>{r.salida ?? '-'}</b>
                               {r.nota ? ` — Nota: ${r.nota}` : ''}
                             </li>
                           ))}
                         </ul>
-                      )}
-
-                      <div style={{ marginTop: 10, fontWeight: 900 }}>
-                        Total neto de hoy:{' '}
-                        <span style={{ color: C.rojo }}>{totalHoyHHMM}</span> h
                       </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ display: 'grid', gap: 10 }}>
-                    <div style={s.row}>
-                      <div style={s.label}>Periodo</div>
-                      <button
-                        style={btnStyle(modo === 'DIA' || loadingPeriodo, 'ghost')}
-                        onClick={() => setModo('DIA')}
-                        disabled={modo === 'DIA' || loadingPeriodo}
-                      >
-                        Día
-                      </button>
-                      <button
-                        style={btnStyle(modo === 'SEMANA' || loadingPeriodo, 'ghost')}
-                        onClick={() => setModo('SEMANA')}
-                        disabled={modo === 'SEMANA' || loadingPeriodo}
-                      >
-                        Semana
-                      </button>
-                      <button
-                        style={btnStyle(modo === 'MES' || loadingPeriodo, 'ghost')}
-                        onClick={() => setModo('MES')}
-                        disabled={modo === 'MES' || loadingPeriodo}
-                      >
-                        Mes
-                      </button>
-                    </div>
-
-                    <div style={s.row}>
-                      <div style={s.label}>Fecha</div>
-                      <input
-                        type="date"
-                        value={fechaSel}
-                        onChange={(e) => setFechaSel(e.target.value)}
-                        disabled={loadingPeriodo}
-                        style={{ ...s.input, maxWidth: 220 }}
-                      />
-                      <button
-                        style={btnStyle(loadingPeriodo, 'ghost')}
-                        onClick={() => setFechaSel(fechaLocalYYYYMMDD())}
-                        disabled={loadingPeriodo}
-                      >
-                        Hoy
-                      </button>
-
-                      <button
-                        style={btnStyle(loadingPeriodo, 'primary')}
-                        onClick={() =>
-                          exportarXLSX({
-                            empresaNombre: EMPRESA_NOMBRE_EXCEL,
-                            empleadoNombre: empleadoNombre,
-                            modo,
-                            fechaSel,
-                            registrosPeriodo,
-                            totalPeriodoHHMM,
-                          })
-                        }
-                        disabled={loadingPeriodo}
-                      >
-                        Exportar Excel
-                      </button>
-                    </div>
-
-                    <div style={s.small}>
-                      <b>
-                        Total{' '}
-                        {modo === 'DIA'
-                          ? 'del día'
-                          : modo === 'SEMANA'
-                          ? 'semanal'
-                          : 'mensual'}{' '}
-                        (neto):
-                      </b>{' '}
-                      {loadingPeriodo ? 'Cargando...' : `${totalPeriodoHHMM} horas`}
-                    </div>
-
-                    <div style={s.msg}>{msg}</div>
-
-                    <div style={s.hr} />
-
-                    {loadingPeriodo ? (
-                      <div style={s.small}>Cargando...</div>
-                    ) : modo === 'DIA' ? (
-                      registrosPeriodo.length === 0 ? (
-                        <div style={s.small}>(Sin registros ese día)</div>
-                      ) : (
-                        <ul style={s.list}>
-                          {registrosPeriodo.map((r) => (
-                            <li key={r.id} style={s.li}>
-                              <b>{formatearFechaDDMMYYYY(r.fecha)}</b> — <b>{r.tipo}</b> —
-                              Entrada: <b>{r.entrada ?? '-'}</b> — Salida:{' '}
-                              <b>{r.salida ?? '-'}</b>
-                              {r.nota ? ` — Nota: ${r.nota}` : ''}
-                            </li>
-                          ))}
-                        </ul>
-                      )
-                    ) : gruposPeriodo.length === 0 ? (
-                      <div style={s.small}>(Sin registros en el periodo)</div>
-                    ) : (
-                      <>
-                        {gruposPeriodo.map((g) => (
-                          <div key={g.fecha} style={{ marginBottom: 12 }}>
-                            <div style={{ fontWeight: 900 }}>
-                              {formatearFechaDDMMYYYY(g.fecha)} — Total neto:{' '}
-                              <span style={{ color: C.rojo }}>
-                                {minutesToHHMM(g.totalMin)}
-                              </span>{' '}
-                              h
-                            </div>
-                            <ul style={{ ...s.list, marginTop: 6 }}>
-                              {g.items.map((r) => (
-                                <li key={r.id} style={s.li}>
-                                  {r.tipo} — Entrada: <b>{r.entrada ?? '-'}</b> — Salida:{' '}
-                                  <b>{r.salida ?? '-'}</b>
-                                  {r.nota ? ` — Nota: ${r.nota}` : ''}
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        ))}
-                      </>
-                    )}
-                  </div>
+                    ))}
+                  </>
                 )}
-              </>
+              </div>
             )}
           </div>
         )}
       </div>
 
       {/* Barra inferior sticky con botones grandes */}
-      {session && tab === 'FICHAR' && authView !== 'NEWPASS' && (
+      {session && tab === 'FICHAR' && (
         <div style={s.bottomBar}>
           <div style={s.bottomInner}>
             <button
