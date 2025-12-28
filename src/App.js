@@ -233,6 +233,18 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
+  // Responsive (para que en iPhone estrecho no se descuadre)
+  const [isNarrow, setIsNarrow] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < 390;
+  });
+
+  useEffect(() => {
+    const onResize = () => setIsNarrow(window.innerWidth < 390);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
   const empleadoObjetivoId = profile?.es_admin
     ? empleadoSel || profile?.empleado_id
     : profile?.empleado_id;
@@ -328,8 +340,7 @@ export default function App() {
     };
 
     cargarEmpleados();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.es_admin, profile?.empleado_id]);
+  }, [profile?.es_admin, profile?.empleado_id, empleadoSel]);
 
   /* -------- Nombre empleado (UI y Excel) -------- */
   useEffect(() => {
@@ -444,13 +455,11 @@ export default function App() {
     if (!empleadoObjetivoId) return;
     cargarEstadoDia();
     cargarPeriodo(modo, fechaSel);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [empleadoObjetivoId]);
+  }, [empleadoObjetivoId]); // intencional
 
   useEffect(() => {
     if (!empleadoObjetivoId) return;
     cargarPeriodo(modo, fechaSel);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modo, fechaSel, empleadoObjetivoId]);
 
   /* -------- Login / Logout -------- */
@@ -692,16 +701,22 @@ export default function App() {
 
   const s = {
     page: {
-      minHeight: '100vh',
+      minHeight: '100dvh',
       background: C.fondo,
       fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, Arial',
-      padding: 14,
       color: C.negro,
+      paddingTop: 'calc(14px + env(safe-area-inset-top))',
+      paddingLeft: 14,
+      paddingRight: 14,
+      paddingBottom: 'calc(14px + env(safe-area-inset-bottom))',
+      boxSizing: 'border-box',
     },
     shell: {
-      maxWidth: 480,
+      width: '100%',
+      maxWidth: 520,
       margin: '0 auto',
       paddingBottom: 120,
+      boxSizing: 'border-box',
     },
     header: {
       background: C.rojo,
@@ -709,16 +724,20 @@ export default function App() {
       borderRadius: 18,
       padding: 14,
       boxShadow: '0 10px 25px rgba(0,0,0,.08)',
+      overflow: 'hidden',
     },
     headerTop: {
       display: 'flex',
-      alignItems: 'center',
+      alignItems: isNarrow ? 'flex-start' : 'center',
       justifyContent: 'space-between',
       gap: 10,
+      flexDirection: isNarrow ? 'column' : 'row',
     },
     brand: { display: 'flex', flexDirection: 'column', gap: 2 },
     brandName: { fontWeight: 900, fontSize: 22, lineHeight: 1.1 },
     brandSub: { fontSize: 13, opacity: 0.9, fontWeight: 800 },
+
+    // ✅ NO se sale: permite 2 líneas y se adapta a pantallas estrechas
     datePill: {
       background: 'rgba(255,255,255,.16)',
       border: '1px solid rgba(255,255,255,.25)',
@@ -726,14 +745,24 @@ export default function App() {
       borderRadius: 999,
       fontSize: 12,
       fontWeight: 800,
-      whiteSpace: 'nowrap',
+      maxWidth: '100%',
+      whiteSpace: 'normal',
+      lineHeight: 1.15,
+      textAlign: isNarrow ? 'left' : 'right',
     },
+
+    // ✅ Permite wrap para que no empuje el "Estado"
     clock: {
       marginTop: 10,
       display: 'flex',
       gap: 12,
-      alignItems: 'center',
+      alignItems: 'stretch',
       justifyContent: 'space-between',
+      flexWrap: 'wrap',
+    },
+    clockLeft: {
+      flex: '1 1 220px',
+      minWidth: 0,
     },
     clockBig: {
       fontSize: 34,
@@ -741,16 +770,27 @@ export default function App() {
       letterSpacing: 0.5,
       lineHeight: 1,
     },
+
+    // ✅ Estado adaptable (sin minWidth fijo)
     statusPill: {
+      flex: '1 1 220px',
+      minWidth: 0,
       background: 'rgba(255,255,255,.16)',
       border: '1px solid rgba(255,255,255,.25)',
-      padding: '8px 10px',
+      padding: '10px 12px',
       borderRadius: 14,
       fontSize: 12,
       fontWeight: 900,
-      textAlign: 'right',
-      minWidth: 160,
+      textAlign: isNarrow ? 'left' : 'right',
+      overflow: 'hidden',
     },
+    statusValue: {
+      marginTop: 4,
+      whiteSpace: 'normal',
+      wordBreak: 'break-word',
+      lineHeight: 1.15,
+    },
+
     tabs: { marginTop: 12, display: 'flex', gap: 10 },
     tabBtn: (active) => ({
       flex: 1,
@@ -828,7 +868,7 @@ export default function App() {
       borderTop: `1px solid ${C.borde}`,
     },
     bottomInner: {
-      maxWidth: 480,
+      maxWidth: 520,
       margin: '0 auto',
       display: 'grid',
       gridTemplateColumns: '1fr 1fr',
@@ -924,15 +964,16 @@ export default function App() {
           </div>
 
           <div style={s.clock}>
-            <div>
+            <div style={s.clockLeft}>
               <div style={{ fontSize: 12, opacity: 0.9, fontWeight: 800 }}>
                 Hora actual
               </div>
               <div style={s.clockBig}>{horaGrande}</div>
             </div>
+
             <div style={s.statusPill}>
               <div style={{ opacity: 0.9 }}>Estado</div>
-              <div style={{ marginTop: 4 }}>{estadoTexto}</div>
+              <div style={s.statusValue}>{estadoTexto}</div>
             </div>
           </div>
 
@@ -986,6 +1027,7 @@ export default function App() {
                 justifyContent: 'space-between',
                 gap: 10,
                 alignItems: 'center',
+                flexWrap: 'wrap',
               }}
             >
               <div style={s.employeePill}>
