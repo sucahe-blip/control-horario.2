@@ -10,62 +10,6 @@ const EMPRESA_NOMBRE_EXCEL = 'CAÑIZARES, INSTALACIONES Y PROYECTOS, S.A.';
 const EMPRESA_NOMBRE_UI = 'Cañizares, Instalaciones y Proyectos, S.A.';
 
 /* =========================
-   PRIVACIDAD (TEXTO)
-   ========================= */
-
-const PRIVACIDAD_TEXTO = `
-AVISO DE PRIVACIDAD – CONTROL HORARIO
-
-Responsable del tratamiento
-Cañizares, Instalaciones y Proyectos, S.A.
-CIF: A78593316
-Dirección: Calle Islas Cíes 35, 28035 Madrid
-Email de contacto: canizares@jcanizares.com
-
-1. Finalidad del tratamiento
-Los datos personales recogidos a través de esta aplicación se utilizan exclusivamente para:
-- El registro de la jornada laboral.
-- El control horario del personal.
-- La gestión laboral y administrativa de los empleados.
-- La generación de informes internos y registros obligatorios ante inspecciones laborales.
-
-2. Base legal
-El tratamiento se basa en:
-- El cumplimiento de una obligación legal (art. 34.9 Estatuto de los Trabajadores).
-- La ejecución del contrato laboral.
-- El interés legítimo en la organización y control de la actividad laboral.
-
-3. Datos tratados
-- Correo electrónico corporativo
-- Identificación del empleado
-- Registros de entrada y salida
-- Fechas, horas y notas asociadas al fichaje
-No se recogen datos especialmente protegidos.
-
-4. Conservación de los datos
-Los registros se conservarán durante un mínimo de 4 años, conforme a la normativa laboral vigente.
-
-5. Destinatarios
-Los datos podrán ser tratados por la propia empresa y por proveedores tecnológicos necesarios (alojamiento/BD),
-bajo contrato de confidencialidad. No se cederán datos a terceros salvo obligación legal.
-
-6. Derechos
-Acceso, rectificación, supresión, limitación y oposición.
-Para ejercerlos: canizares@jcanizares.com
-
-7. Seguridad
-Se aplican medidas técnicas y organizativas razonables para proteger los datos.
-
-8. Aceptación
-El uso de la aplicación implica la aceptación de este aviso.
-
-AVISO LEGAL
-Titular: Cañizares, Instalaciones y Proyectos, S.A. — CIF: A78593316
-Domicilio: Calle Islas Cíes 35, 28035 Madrid
-Email: canizares@jcanizares.com
-`;
-
-/* =========================
    FACTORES / TIEMPOS
    ========================= */
 
@@ -246,80 +190,6 @@ function exportarXLSX({
 }
 
 /* =========================
-   COMPONENTE: MODAL
-   ========================= */
-
-function Modal({ title, children, onClose }) {
-  const C = {
-    borde: '#e5e7eb',
-    blanco: '#ffffff',
-    negro: '#111827',
-    fondo: 'rgba(0,0,0,.45)',
-  };
-
-  const m = {
-    overlay: {
-      position: 'fixed',
-      inset: 0,
-      background: C.fondo,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: 14,
-      zIndex: 9999,
-    },
-    panel: {
-      width: '100%',
-      maxWidth: 560,
-      background: C.blanco,
-      borderRadius: 18,
-      border: `1px solid ${C.borde}`,
-      boxShadow: '0 20px 50px rgba(0,0,0,.2)',
-      overflow: 'hidden',
-    },
-    head: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      padding: 14,
-      borderBottom: `1px solid ${C.borde}`,
-    },
-    title: { fontWeight: 900, color: C.negro },
-    close: {
-      border: `1px solid ${C.borde}`,
-      background: C.blanco,
-      borderRadius: 12,
-      padding: '8px 10px',
-      fontWeight: 900,
-      cursor: 'pointer',
-    },
-    body: {
-      padding: 14,
-      maxHeight: '70vh',
-      overflow: 'auto',
-      whiteSpace: 'pre-wrap',
-      lineHeight: 1.35,
-      color: C.negro,
-      fontSize: 14,
-    },
-  };
-
-  return (
-    <div style={m.overlay} onClick={onClose}>
-      <div style={m.panel} onClick={(e) => e.stopPropagation()}>
-        <div style={m.head}>
-          <div style={m.title}>{title}</div>
-          <button style={m.close} onClick={onClose}>
-            Cerrar
-          </button>
-        </div>
-        <div style={m.body}>{children}</div>
-      </div>
-    </div>
-  );
-}
-
-/* =========================
    APP
    ========================= */
 
@@ -356,13 +226,11 @@ export default function App() {
   // Tabs
   const [tab, setTab] = useState('FICHAR'); // FICHAR | HISTORICO
 
-  // Privacidad modal
-  const [showPrivacidad, setShowPrivacidad] = useState(false);
+  // Recuperar contraseña
+  const [recovering, setRecovering] = useState(false);
 
-  // Recuperación de contraseña (modo)
-  const [recoveryMode, setRecoveryMode] = useState(false);
-  const [newPass, setNewPass] = useState('');
-  const [newPass2, setNewPass2] = useState('');
+  // Modal privacidad
+  const [showPrivacidad, setShowPrivacidad] = useState(false);
 
   // Reloj
   const [now, setNow] = useState(() => new Date());
@@ -405,22 +273,8 @@ export default function App() {
       setSession(data.session ?? null);
     });
 
-    const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, newSession) => {
       setSession(newSession);
-
-      // Cuando el usuario entra desde el email de recuperación:
-      if (event === 'PASSWORD_RECOVERY') {
-        setRecoveryMode(true);
-        setMsg('Introduce una nueva contraseña');
-      }
-
-      // reset de UI “normal”
-      if (event === 'SIGNED_OUT') {
-        setRecoveryMode(false);
-        setNewPass('');
-        setNewPass2('');
-      }
-
       setProfile(null);
       setAbiertoTrabajo(null);
       setAbiertoPausa(null);
@@ -433,6 +287,9 @@ export default function App() {
       setEmpleadoNombre('');
       setNota('');
       setTab('FICHAR');
+      setMsg('');
+      setRecovering(false);
+      setShowPrivacidad(false);
     });
 
     return () => sub.subscription.unsubscribe();
@@ -513,6 +370,7 @@ export default function App() {
     if (!empleadoObjetivoId) return;
     const fecha = fechaLocalYYYYMMDD();
 
+    // Trabajo abierto (solo tipo Trabajo)
     const { data: tOpen } = await supabase
       .from('registros')
       .select('id, entrada, tipo')
@@ -526,6 +384,7 @@ export default function App() {
 
     setAbiertoTrabajo(tOpen ?? null);
 
+    // Pausa abierta
     const { data: pOpen } = await supabase
       .from('registros')
       .select('id, entrada, tipo')
@@ -539,6 +398,7 @@ export default function App() {
 
     setAbiertoPausa(pOpen ?? null);
 
+    // Lista de hoy
     const { data: lista } = await supabase
       .from('registros')
       .select('id, fecha, entrada, salida, tipo, nota, created_at')
@@ -615,48 +475,32 @@ export default function App() {
     await supabase.auth.signOut();
     setSession(null);
     setProfile(null);
+    setHoy([]);
+    setAbiertoTrabajo(null);
+    setAbiertoPausa(null);
+    setRegistrosPeriodo([]);
+    setEmpleados([]);
+    setEmpleadoSel('');
+    setEmpleadoNombre('');
     setMsg('Sesión cerrada');
   };
 
-  /* -------- Recuperar contraseña -------- */
-  const enviarReset = async () => {
-    const e = email.trim();
-    if (!e) {
-      setMsg('Escribe tu email para enviar el enlace de recuperación.');
+  const enviarRecuperacion = async () => {
+    const emailTrim = (email || '').trim();
+    if (!emailTrim) {
+      setMsg('Introduce tu email para recuperar la contraseña.');
       return;
     }
-
+    setBusy(true);
     setMsg('Enviando email de recuperación...');
-    const { error } = await supabase.auth.resetPasswordForEmail(e, {
-      redirectTo: window.location.origin,
-    });
-
-    if (error) setMsg('ERROR: ' + error.message);
-    else setMsg('✅ Email enviado. Revisa tu correo y sigue el enlace.');
-  };
-
-  const guardarNuevaPassword = async () => {
-    if (!newPass || newPass.length < 6) {
-      setMsg('La contraseña debe tener al menos 6 caracteres.');
-      return;
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(emailTrim);
+      if (error) setMsg('ERROR: ' + error.message);
+      else setMsg('✅ Te hemos enviado un email para restablecer la contraseña.');
+    } finally {
+      setBusy(false);
+      setRecovering(false);
     }
-    if (newPass !== newPass2) {
-      setMsg('Las contraseñas no coinciden.');
-      return;
-    }
-
-    setMsg('Guardando nueva contraseña...');
-    const { error } = await supabase.auth.updateUser({ password: newPass });
-
-    if (error) {
-      setMsg('ERROR: ' + error.message);
-      return;
-    }
-
-    setMsg('✅ Contraseña actualizada. Ya puedes usar la app.');
-    setRecoveryMode(false);
-    setNewPass('');
-    setNewPass2('');
   };
 
   /* =========================
@@ -761,6 +605,7 @@ export default function App() {
       const hora = horaLocalHHMM();
       const notaLimpia = nota.trim();
 
+      // cerrar trabajo
       const { error: e1 } = await supabase
         .from('registros')
         .update({ salida: hora })
@@ -771,6 +616,7 @@ export default function App() {
         return;
       }
 
+      // abrir pausa
       const { error: e2 } = await supabase.from('registros').insert({
         empleado_id: profile.empleado_id,
         fecha,
@@ -809,6 +655,7 @@ export default function App() {
       const hora = horaLocalHHMM();
       const notaLimpia = nota.trim();
 
+      // cerrar pausa
       const payload = { salida: hora };
       if (notaLimpia) payload.nota = notaLimpia;
 
@@ -822,6 +669,7 @@ export default function App() {
         return;
       }
 
+      // abrir trabajo
       const { error: e2 } = await supabase.from('registros').insert({
         empleado_id: profile.empleado_id,
         fecha,
@@ -888,15 +736,21 @@ export default function App() {
       padding: 14,
       boxShadow: '0 10px 25px rgba(0,0,0,.08)',
     },
+
+    // ✅ AJUSTE: permite que en móvil salte de línea sin descuadrarse
     headerTop: {
       display: 'flex',
-      alignItems: 'center',
+      alignItems: 'flex-start',
       justifyContent: 'space-between',
       gap: 10,
+      flexWrap: 'wrap',
     },
+
     brand: { display: 'flex', flexDirection: 'column', gap: 2 },
-    brandName: { fontWeight: 900, fontSize: 18, lineHeight: 1.15 },
+    brandName: { fontWeight: 900, fontSize: 22, lineHeight: 1.1 },
     brandSub: { fontSize: 13, opacity: 0.9, fontWeight: 800 },
+
+    // ✅ AJUSTE: fecha sin recorte raro y alineada
     datePill: {
       background: 'rgba(255,255,255,.16)',
       border: '1px solid rgba(255,255,255,.25)',
@@ -905,23 +759,28 @@ export default function App() {
       fontSize: 12,
       fontWeight: 800,
       whiteSpace: 'nowrap',
-      maxWidth: 180,
-      overflow: 'hidden',
-      textOverflow: 'ellipsis',
+      maxWidth: '100%',
+      marginLeft: 'auto',
     },
+
+    // ✅ AJUSTE: reloj y estado pueden bajar de línea
     clock: {
       marginTop: 10,
       display: 'flex',
       gap: 12,
-      alignItems: 'center',
+      alignItems: 'flex-end',
       justifyContent: 'space-between',
+      flexWrap: 'wrap',
     },
+
     clockBig: {
       fontSize: 34,
       fontWeight: 900,
       letterSpacing: 0.5,
       lineHeight: 1,
     },
+
+    // ✅ AJUSTE: estado no se sale
     statusPill: {
       background: 'rgba(255,255,255,.16)',
       border: '1px solid rgba(255,255,255,.25)',
@@ -931,7 +790,10 @@ export default function App() {
       fontWeight: 900,
       textAlign: 'right',
       minWidth: 160,
+      maxWidth: '100%',
+      marginLeft: 'auto',
     },
+
     tabs: { marginTop: 12, display: 'flex', gap: 10 },
     tabBtn: (active) => ({
       flex: 1,
@@ -1045,17 +907,6 @@ export default function App() {
       padding: 14,
     },
 
-    linkBtn: {
-      border: 'none',
-      background: 'transparent',
-      padding: 0,
-      margin: 0,
-      color: C.rojo,
-      fontWeight: 900,
-      cursor: 'pointer',
-      textAlign: 'left',
-    },
-
     employeePill: {
       display: 'inline-flex',
       alignItems: 'center',
@@ -1066,6 +917,45 @@ export default function App() {
       background: C.blanco,
       fontWeight: 900,
     },
+
+    linkLine: {
+      marginTop: 10,
+      display: 'flex',
+      gap: 18,
+      flexWrap: 'wrap',
+    },
+    linkBtn: {
+      background: 'transparent',
+      border: 0,
+      padding: 0,
+      color: C.rojo,
+      fontWeight: 900,
+      cursor: 'pointer',
+    },
+
+    modalBackdrop: {
+      position: 'fixed',
+      inset: 0,
+      background: 'rgba(0,0,0,.35)',
+      display: 'flex',
+      alignItems: 'flex-end',
+      justifyContent: 'center',
+      padding: 12,
+      zIndex: 9999,
+    },
+    modal: {
+      width: '100%',
+      maxWidth: 520,
+      background: C.blanco,
+      borderRadius: 18,
+      border: `1px solid ${C.borde}`,
+      boxShadow: '0 20px 40px rgba(0,0,0,.25)',
+      padding: 14,
+      maxHeight: '80vh',
+      overflow: 'auto',
+    },
+    modalTitle: { fontWeight: 900, fontSize: 16, marginBottom: 8 },
+    modalP: { fontSize: 13, color: C.negro, lineHeight: 1.35, margin: '8px 0' },
   };
 
   const btnStyle = (disabled, variant) => ({
@@ -1098,6 +988,58 @@ export default function App() {
     loadingPeriodo ||
     !abiertoTrabajo ||
     !!abiertoPausa;
+
+  /* =========================
+     Texto privacidad (Opción 1)
+     ========================= */
+
+  const privacidadTexto = (
+    <>
+      <div style={s.modalTitle}>Aviso de privacidad</div>
+
+      <p style={s.modalP}>
+        <b>Responsable:</b> Cañizares, Instalaciones y Proyectos, S.A. (CIF: A78593316),
+        Calle Islas Cíes 35, 28035 Madrid. Email: canizares@jcanizares.com
+      </p>
+
+      <p style={s.modalP}>
+        <b>Finalidad:</b> Gestión del registro diario de jornada, control horario y elaboración de
+        informes/estadísticas asociadas al cumplimiento de la normativa laboral.
+      </p>
+
+      <p style={s.modalP}>
+        <b>Base jurídica:</b> Cumplimiento de una obligación legal en materia de registro de jornada y,
+        en su caso, interés legítimo de la empresa en la gestión organizativa.
+      </p>
+
+      <p style={s.modalP}>
+        <b>Datos tratados:</b> Usuario (email), identificador de empleado, registros de entrada/salida,
+        pausas y notas asociadas al fichaje.
+      </p>
+
+      <p style={s.modalP}>
+        <b>Destinatarios:</b> No se cederán datos a terceros salvo obligación legal. Proveedores
+        tecnológicos (p. ej. hosting/BD) podrán acceder a datos como encargados del tratamiento.
+      </p>
+
+      <p style={s.modalP}>
+        <b>Conservación:</b> Durante el tiempo legalmente exigible y, en su caso, durante los plazos
+        necesarios para atender responsabilidades derivadas.
+      </p>
+
+      <p style={s.modalP}>
+        <b>Derechos:</b> Acceso, rectificación, supresión, limitación y oposición, cuando proceda.
+        Para ejercerlos, escribe a <b>canizares@jcanizares.com</b>. También puedes presentar una
+        reclamación ante la AEPD.
+      </p>
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
+        <button style={btnStyle(false, 'primary')} onClick={() => setShowPrivacidad(false)}>
+          Cerrar
+        </button>
+      </div>
+    </>
+  );
 
   /* =========================
      RENDER
@@ -1146,14 +1088,11 @@ export default function App() {
           </div>
         </div>
 
-        {/* ======== LOGIN / RECOVERY ======== */}
         {!session ? (
           <div style={s.loginBox}>
-            <div style={{ fontWeight: 900, marginBottom: 10 }}>
-              {recoveryMode ? 'Nueva contraseña' : 'Acceso'}
-            </div>
+            <div style={{ fontWeight: 900, marginBottom: 10 }}>Acceso</div>
 
-            {!recoveryMode ? (
+            {!recovering ? (
               <div style={{ display: 'grid', gap: 10 }}>
                 <input
                   style={s.input}
@@ -1168,15 +1107,16 @@ export default function App() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
-                <button style={btnStyle(false, 'primary')} onClick={login}>
+
+                <button style={btnStyle(false, 'primary')} onClick={login} disabled={busy}>
                   Entrar
                 </button>
 
-                {/* Opción 1: enlaces debajo */}
-                <div style={{ display: 'grid', gap: 6 }}>
-                  <button style={s.linkBtn} onClick={enviarReset}>
+                <div style={s.linkLine}>
+                  <button style={s.linkBtn} onClick={() => setRecovering(true)} disabled={busy}>
                     ¿Has olvidado la contraseña?
                   </button>
+
                   <button style={s.linkBtn} onClick={() => setShowPrivacidad(true)}>
                     Aviso de privacidad
                   </button>
@@ -1186,32 +1126,30 @@ export default function App() {
               </div>
             ) : (
               <div style={{ display: 'grid', gap: 10 }}>
+                <div style={{ fontWeight: 900 }}>Recuperar contraseña</div>
+                <div style={s.small}>
+                  Introduce tu email y te enviaremos un enlace para restablecer la contraseña.
+                </div>
+
                 <input
                   style={s.input}
-                  placeholder="Nueva contraseña"
-                  type="password"
-                  value={newPass}
-                  onChange={(e) => setNewPass(e.target.value)}
+                  placeholder="Email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
                 />
-                <input
-                  style={s.input}
-                  placeholder="Repite la contraseña"
-                  type="password"
-                  value={newPass2}
-                  onChange={(e) => setNewPass2(e.target.value)}
-                />
-                <button style={btnStyle(false, 'primary')} onClick={guardarNuevaPassword}>
-                  Guardar contraseña
+
+                <button
+                  style={btnStyle(busy, 'primary')}
+                  onClick={enviarRecuperacion}
+                  disabled={busy}
+                >
+                  Enviar email
                 </button>
 
                 <button
-                  style={btnStyle(false, 'ghost')}
-                  onClick={() => {
-                    setRecoveryMode(false);
-                    setNewPass('');
-                    setNewPass2('');
-                    setMsg('');
-                  }}
+                  style={btnStyle(busy, 'ghost')}
+                  onClick={() => setRecovering(false)}
+                  disabled={busy}
                 >
                   Volver
                 </button>
@@ -1222,7 +1160,7 @@ export default function App() {
           </div>
         ) : (
           <div style={s.card}>
-            {/* Nombre del empleado + salir */}
+            {/* Nombre del empleado */}
             <div
               style={{
                 display: 'flex',
@@ -1243,7 +1181,7 @@ export default function App() {
                 onClick={logout}
                 disabled={busy || loadingPeriodo}
               >
-                Cerrar sesión
+                Salir
               </button>
             </div>
 
@@ -1279,9 +1217,7 @@ export default function App() {
                   </div>
 
                   {!estoyViendoMiEmpleado && (
-                    <div style={{ ...s.small, fontWeight: 900 }}>
-                      (Viendo otro empleado)
-                    </div>
+                    <div style={{ ...s.small, fontWeight: 900 }}>(Viendo otro empleado)</div>
                   )}
                 </div>
 
@@ -1310,9 +1246,7 @@ export default function App() {
                 <div style={s.hr} />
 
                 <div>
-                  <div style={{ fontWeight: 900, marginBottom: 8 }}>
-                    Registro de hoy
-                  </div>
+                  <div style={{ fontWeight: 900, marginBottom: 8 }}>Registro de hoy</div>
 
                   {hoy.length === 0 ? (
                     <div style={s.small}>(Sin registros hoy)</div>
@@ -1329,8 +1263,7 @@ export default function App() {
                   )}
 
                   <div style={{ marginTop: 10, fontWeight: 900 }}>
-                    Total neto de hoy:{' '}
-                    <span style={{ color: C.rojo }}>{totalHoyHHMM}</span> h
+                    Total neto de hoy: <span style={{ color: C.rojo }}>{totalHoyHHMM}</span> h
                   </div>
                 </div>
               </div>
@@ -1437,10 +1370,7 @@ export default function App() {
                       <div key={g.fecha} style={{ marginBottom: 12 }}>
                         <div style={{ fontWeight: 900 }}>
                           {formatearFechaDDMMYYYY(g.fecha)} — Total neto:{' '}
-                          <span style={{ color: C.rojo }}>
-                            {minutesToHHMM(g.totalMin)}
-                          </span>{' '}
-                          h
+                          <span style={{ color: C.rojo }}>{minutesToHHMM(g.totalMin)}</span> h
                         </div>
                         <ul style={{ ...s.list, marginTop: 6 }}>
                           {g.items.map((r) => (
@@ -1492,9 +1422,11 @@ export default function App() {
 
       {/* Modal privacidad */}
       {showPrivacidad && (
-        <Modal title="Aviso de privacidad y aviso legal" onClose={() => setShowPrivacidad(false)}>
-          {PRIVACIDAD_TEXTO}
-        </Modal>
+        <div style={s.modalBackdrop} onClick={() => setShowPrivacidad(false)}>
+          <div style={s.modal} onClick={(e) => e.stopPropagation()}>
+            {privacidadTexto}
+          </div>
+        </div>
       )}
     </div>
   );
