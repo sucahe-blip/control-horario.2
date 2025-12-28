@@ -25,3 +25,24 @@ body {
   padding-bottom: env(safe-area-inset-bottom);
   padding-left: env(safe-area-inset-left);
 }
+/* evita que textos largos rompan el layout */
+.fecha, .fecha-hoy, .dateBadge, .chip-fecha {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* si la cabecera tiene elementos en fila (logo + fecha), deja que se ajuste */
+.header, .cabecera, .topBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap; /* clave: si no cabe, baja de línea */
+}
+
+/* si la fecha va a la derecha tipo “pastilla” */
+.fecha, .fecha-hoy, .dateBadge, .chip-fecha {
+  min-width: 0; /* clave para que el ellipsis funcione en flex */
+}
+
