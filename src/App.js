@@ -6,8 +6,64 @@ import * as XLSX from 'xlsx';
    CONFIG
    ========================= */
 
-const EMPRESA_NOMBRE_EXCEL = 'CAÑIZARES, S.A.';
-const EMPRESA_NOMBRE_UI = 'Cañizares S.A.';
+const EMPRESA_NOMBRE_EXCEL = 'CAÑIZARES, INSTALACIONES Y PROYECTOS, S.A.';
+const EMPRESA_NOMBRE_UI = 'Cañizares, Instalaciones y Proyectos, S.A.';
+
+/* =========================
+   PRIVACIDAD (TEXTO)
+   ========================= */
+
+const PRIVACIDAD_TEXTO = `
+AVISO DE PRIVACIDAD – CONTROL HORARIO
+
+Responsable del tratamiento
+Cañizares, Instalaciones y Proyectos, S.A.
+CIF: A78593316
+Dirección: Calle Islas Cíes 35, 28035 Madrid
+Email de contacto: canizares@jcanizares.com
+
+1. Finalidad del tratamiento
+Los datos personales recogidos a través de esta aplicación se utilizan exclusivamente para:
+- El registro de la jornada laboral.
+- El control horario del personal.
+- La gestión laboral y administrativa de los empleados.
+- La generación de informes internos y registros obligatorios ante inspecciones laborales.
+
+2. Base legal
+El tratamiento se basa en:
+- El cumplimiento de una obligación legal (art. 34.9 Estatuto de los Trabajadores).
+- La ejecución del contrato laboral.
+- El interés legítimo en la organización y control de la actividad laboral.
+
+3. Datos tratados
+- Correo electrónico corporativo
+- Identificación del empleado
+- Registros de entrada y salida
+- Fechas, horas y notas asociadas al fichaje
+No se recogen datos especialmente protegidos.
+
+4. Conservación de los datos
+Los registros se conservarán durante un mínimo de 4 años, conforme a la normativa laboral vigente.
+
+5. Destinatarios
+Los datos podrán ser tratados por la propia empresa y por proveedores tecnológicos necesarios (alojamiento/BD),
+bajo contrato de confidencialidad. No se cederán datos a terceros salvo obligación legal.
+
+6. Derechos
+Acceso, rectificación, supresión, limitación y oposición.
+Para ejercerlos: canizares@jcanizares.com
+
+7. Seguridad
+Se aplican medidas técnicas y organizativas razonables para proteger los datos.
+
+8. Aceptación
+El uso de la aplicación implica la aceptación de este aviso.
+
+AVISO LEGAL
+Titular: Cañizares, Instalaciones y Proyectos, S.A. — CIF: A78593316
+Domicilio: Calle Islas Cíes 35, 28035 Madrid
+Email: canizares@jcanizares.com
+`;
 
 /* =========================
    FACTORES / TIEMPOS
@@ -190,21 +246,87 @@ function exportarXLSX({
 }
 
 /* =========================
+   COMPONENTE: MODAL
+   ========================= */
+
+function Modal({ title, children, onClose }) {
+  const C = {
+    borde: '#e5e7eb',
+    blanco: '#ffffff',
+    negro: '#111827',
+    fondo: 'rgba(0,0,0,.45)',
+  };
+
+  const m = {
+    overlay: {
+      position: 'fixed',
+      inset: 0,
+      background: C.fondo,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 14,
+      zIndex: 9999,
+    },
+    panel: {
+      width: '100%',
+      maxWidth: 560,
+      background: C.blanco,
+      borderRadius: 18,
+      border: `1px solid ${C.borde}`,
+      boxShadow: '0 20px 50px rgba(0,0,0,.2)',
+      overflow: 'hidden',
+    },
+    head: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      padding: 14,
+      borderBottom: `1px solid ${C.borde}`,
+    },
+    title: { fontWeight: 900, color: C.negro },
+    close: {
+      border: `1px solid ${C.borde}`,
+      background: C.blanco,
+      borderRadius: 12,
+      padding: '8px 10px',
+      fontWeight: 900,
+      cursor: 'pointer',
+    },
+    body: {
+      padding: 14,
+      maxHeight: '70vh',
+      overflow: 'auto',
+      whiteSpace: 'pre-wrap',
+      lineHeight: 1.35,
+      color: C.negro,
+      fontSize: 14,
+    },
+  };
+
+  return (
+    <div style={m.overlay} onClick={onClose}>
+      <div style={m.panel} onClick={(e) => e.stopPropagation()}>
+        <div style={m.head}>
+          <div style={m.title}>{title}</div>
+          <button style={m.close} onClick={onClose}>
+            Cerrar
+          </button>
+        </div>
+        <div style={m.body}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/* =========================
    APP
    ========================= */
 
 export default function App() {
   const [session, setSession] = useState(null);
-
-  // login
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-
-  // reset password
-  const [authView, setAuthView] = useState('LOGIN'); // LOGIN | RESET_REQUEST | RESET_SET
-  const [resetEmail, setResetEmail] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [newPassword2, setNewPassword2] = useState('');
 
   const [profile, setProfile] = useState(null);
   const [msg, setMsg] = useState('');
@@ -233,6 +355,14 @@ export default function App() {
 
   // Tabs
   const [tab, setTab] = useState('FICHAR'); // FICHAR | HISTORICO
+
+  // Privacidad modal
+  const [showPrivacidad, setShowPrivacidad] = useState(false);
+
+  // Recuperación de contraseña (modo)
+  const [recoveryMode, setRecoveryMode] = useState(false);
+  const [newPass, setNewPass] = useState('');
+  const [newPass2, setNewPass2] = useState('');
 
   // Reloj
   const [now, setNow] = useState(() => new Date());
@@ -276,13 +406,21 @@ export default function App() {
     });
 
     const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
-      // Cuando el usuario abre el enlace del correo de recuperación:
+      setSession(newSession);
+
+      // Cuando el usuario entra desde el email de recuperación:
       if (event === 'PASSWORD_RECOVERY') {
-        setAuthView('RESET_SET');
-        setMsg('🔐 Introduce tu nueva contraseña');
+        setRecoveryMode(true);
+        setMsg('Introduce una nueva contraseña');
       }
 
-      setSession(newSession);
+      // reset de UI “normal”
+      if (event === 'SIGNED_OUT') {
+        setRecoveryMode(false);
+        setNewPass('');
+        setNewPass2('');
+      }
+
       setProfile(null);
       setAbiertoTrabajo(null);
       setAbiertoPausa(null);
@@ -316,7 +454,6 @@ export default function App() {
       else {
         setProfile(data);
         setMsg('OK ✅');
-        setAuthView('LOGIN');
       }
     };
     run();
@@ -376,7 +513,6 @@ export default function App() {
     if (!empleadoObjetivoId) return;
     const fecha = fechaLocalYYYYMMDD();
 
-    // Trabajo abierto
     const { data: tOpen } = await supabase
       .from('registros')
       .select('id, entrada, tipo')
@@ -390,7 +526,6 @@ export default function App() {
 
     setAbiertoTrabajo(tOpen ?? null);
 
-    // Pausa abierta
     const { data: pOpen } = await supabase
       .from('registros')
       .select('id, entrada, tipo')
@@ -404,7 +539,6 @@ export default function App() {
 
     setAbiertoPausa(pOpen ?? null);
 
-    // Lista de hoy
     const { data: lista } = await supabase
       .from('registros')
       .select('id, fecha, entrada, salida, tipo, nota, created_at')
@@ -481,63 +615,48 @@ export default function App() {
     await supabase.auth.signOut();
     setSession(null);
     setProfile(null);
-    setHoy([]);
-    setAbiertoTrabajo(null);
-    setAbiertoPausa(null);
-    setRegistrosPeriodo([]);
-    setEmpleados([]);
-    setEmpleadoSel('');
-    setEmpleadoNombre('');
     setMsg('Sesión cerrada');
-    setAuthView('LOGIN');
   };
 
-  /* -------- Reset password -------- */
-  const enviarResetPassword = async () => {
-    const mail = (resetEmail || '').trim();
-    if (!mail) {
-      setMsg('Escribe tu email para recuperar la contraseña.');
+  /* -------- Recuperar contraseña -------- */
+  const enviarReset = async () => {
+    const e = email.trim();
+    if (!e) {
+      setMsg('Escribe tu email para enviar el enlace de recuperación.');
       return;
     }
 
-    setBusy(true);
-    try {
-      setMsg('Enviando email...');
-      const { error } = await supabase.auth.resetPasswordForEmail(mail, {
-        // debe ser tu dominio real (Vercel). Esto es CRÍTICO para iPhone.
-        redirectTo: window.location.origin,
-      });
-      if (error) setMsg('ERROR: ' + error.message);
-      else setMsg('✅ Te hemos enviado un email. Ábrelo y sigue el enlace.');
-    } finally {
-      setBusy(false);
-    }
+    setMsg('Enviando email de recuperación...');
+    const { error } = await supabase.auth.resetPasswordForEmail(e, {
+      redirectTo: window.location.origin,
+    });
+
+    if (error) setMsg('ERROR: ' + error.message);
+    else setMsg('✅ Email enviado. Revisa tu correo y sigue el enlace.');
   };
 
   const guardarNuevaPassword = async () => {
-    if (!newPassword || newPassword.length < 6) {
+    if (!newPass || newPass.length < 6) {
       setMsg('La contraseña debe tener al menos 6 caracteres.');
       return;
     }
-    if (newPassword !== newPassword2) {
+    if (newPass !== newPass2) {
       setMsg('Las contraseñas no coinciden.');
       return;
     }
 
-    setBusy(true);
-    try {
-      setMsg('Guardando contraseña...');
-      const { error } = await supabase.auth.updateUser({ password: newPassword });
-      if (error) setMsg('ERROR: ' + error.message);
-      else {
-        setMsg('✅ Contraseña actualizada. Ya puedes entrar.');
-        setAuthView('LOGIN');
-        setNewPassword('');
-        setNewPassword2('');
-      }
-    } finally {
-      setBusy(false);
+    setMsg('Guardando nueva contraseña...');
+    const { error } = await supabase.auth.updateUser({ password: newPass });
+
+    if (error) {
+      setMsg('ERROR: ' + error.message);
+      return;
     }
+
+    setMsg('✅ Contraseña actualizada. Ya puedes usar la app.');
+    setRecoveryMode(false);
+    setNewPass('');
+    setNewPass2('');
   };
 
   /* =========================
@@ -621,7 +740,7 @@ export default function App() {
     }
   }
 
-  // Iniciar pausa: cierra Trabajo y abre Pausa
+  // Iniciar pausa: cierra Trabajo y abre Pausa (para cumplir “1 abierto”)
   async function iniciarPausa() {
     if (!profile?.empleado_id) return;
     if (!estoyViendoMiEmpleado) return;
@@ -642,7 +761,6 @@ export default function App() {
       const hora = horaLocalHHMM();
       const notaLimpia = nota.trim();
 
-      // cerrar trabajo
       const { error: e1 } = await supabase
         .from('registros')
         .update({ salida: hora })
@@ -653,7 +771,6 @@ export default function App() {
         return;
       }
 
-      // abrir pausa
       const { error: e2 } = await supabase.from('registros').insert({
         empleado_id: profile.empleado_id,
         fecha,
@@ -692,7 +809,6 @@ export default function App() {
       const hora = horaLocalHHMM();
       const notaLimpia = nota.trim();
 
-      // cerrar pausa
       const payload = { salida: hora };
       if (notaLimpia) payload.nota = notaLimpia;
 
@@ -706,7 +822,6 @@ export default function App() {
         return;
       }
 
-      // abrir trabajo
       const { error: e2 } = await supabase.from('registros').insert({
         empleado_id: profile.empleado_id,
         fecha,
@@ -755,20 +870,16 @@ export default function App() {
 
   const s = {
     page: {
-      minHeight: '100dvh',
+      minHeight: '100vh',
       background: C.fondo,
       fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, Arial',
-      padding: 'calc(14px + env(safe-area-inset-top)) 14px 14px',
+      padding: 14,
       color: C.negro,
-      boxSizing: 'border-box',
-      overflowX: 'hidden',
     },
     shell: {
-      width: '100%',
       maxWidth: 480,
       margin: '0 auto',
       paddingBottom: 120,
-      boxSizing: 'border-box',
     },
     header: {
       background: C.rojo,
@@ -776,17 +887,15 @@ export default function App() {
       borderRadius: 18,
       padding: 14,
       boxShadow: '0 10px 25px rgba(0,0,0,.08)',
-      boxSizing: 'border-box',
     },
     headerTop: {
       display: 'flex',
-      alignItems: 'flex-start',
+      alignItems: 'center',
       justifyContent: 'space-between',
       gap: 10,
-      flexWrap: 'wrap',
     },
     brand: { display: 'flex', flexDirection: 'column', gap: 2 },
-    brandName: { fontWeight: 900, fontSize: 22, lineHeight: 1.1 },
+    brandName: { fontWeight: 900, fontSize: 18, lineHeight: 1.15 },
     brandSub: { fontSize: 13, opacity: 0.9, fontWeight: 800 },
     datePill: {
       background: 'rgba(255,255,255,.16)',
@@ -795,20 +904,17 @@ export default function App() {
       borderRadius: 999,
       fontSize: 12,
       fontWeight: 800,
-      maxWidth: '100%',
-      textAlign: 'right',
-      whiteSpace: 'normal',
-      lineHeight: 1.15,
+      whiteSpace: 'nowrap',
+      maxWidth: 180,
       overflow: 'hidden',
-      boxSizing: 'border-box',
+      textOverflow: 'ellipsis',
     },
     clock: {
       marginTop: 10,
       display: 'flex',
       gap: 12,
-      alignItems: 'stretch',
+      alignItems: 'center',
       justifyContent: 'space-between',
-      flexWrap: 'wrap',
     },
     clockBig: {
       fontSize: 34,
@@ -819,17 +925,12 @@ export default function App() {
     statusPill: {
       background: 'rgba(255,255,255,.16)',
       border: '1px solid rgba(255,255,255,.25)',
-      padding: '10px 12px',
-      borderRadius: 16,
+      padding: '8px 10px',
+      borderRadius: 14,
       fontSize: 12,
       fontWeight: 900,
       textAlign: 'right',
-      flex: '1 1 160px',
-      maxWidth: '100%',
-      display: 'flex',
-      flexDirection: 'column',
-      justifyContent: 'center',
-      boxSizing: 'border-box',
+      minWidth: 160,
     },
     tabs: { marginTop: 12, display: 'flex', gap: 10 },
     tabBtn: (active) => ({
@@ -849,7 +950,6 @@ export default function App() {
       borderRadius: 18,
       padding: 14,
       boxShadow: '0 10px 25px rgba(0,0,0,.04)',
-      boxSizing: 'border-box',
     },
     row: { display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' },
     label: { fontSize: 12, fontWeight: 900, color: C.gris },
@@ -945,6 +1045,17 @@ export default function App() {
       padding: 14,
     },
 
+    linkBtn: {
+      border: 'none',
+      background: 'transparent',
+      padding: 0,
+      margin: 0,
+      color: C.rojo,
+      fontWeight: 900,
+      cursor: 'pointer',
+      textAlign: 'left',
+    },
+
     employeePill: {
       display: 'inline-flex',
       alignItems: 'center',
@@ -954,17 +1065,6 @@ export default function App() {
       border: `1px solid ${C.borde}`,
       background: C.blanco,
       fontWeight: 900,
-    },
-
-    linkBtn: {
-      border: 'none',
-      background: 'transparent',
-      padding: 0,
-      marginTop: 8,
-      color: C.rojo,
-      fontWeight: 900,
-      textAlign: 'left',
-      cursor: 'pointer',
     },
   };
 
@@ -1016,13 +1116,12 @@ export default function App() {
           </div>
 
           <div style={s.clock}>
-            <div style={{ flex: '1 1 160px', minWidth: 160 }}>
+            <div>
               <div style={{ fontSize: 12, opacity: 0.9, fontWeight: 800 }}>
                 Hora actual
               </div>
               <div style={s.clockBig}>{horaGrande}</div>
             </div>
-
             <div style={s.statusPill}>
               <div style={{ opacity: 0.9 }}>Estado</div>
               <div style={{ marginTop: 4 }}>{estadoTexto}</div>
@@ -1047,139 +1146,89 @@ export default function App() {
           </div>
         </div>
 
-        {/* =========================
-            LOGIN / RECUPERAR / NUEVA PASS
-           ========================= */}
+        {/* ======== LOGIN / RECOVERY ======== */}
         {!session ? (
           <div style={s.loginBox}>
-            {authView === 'RESET_SET' ? (
-              <>
-                <div style={{ fontWeight: 900, marginBottom: 10 }}>
-                  Nueva contraseña
-                </div>
-                <div style={{ display: 'grid', gap: 10 }}>
-                  <input
-                    style={s.input}
-                    placeholder="Nueva contraseña (mín. 6)"
-                    type="password"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    disabled={busy}
-                  />
-                  <input
-                    style={s.input}
-                    placeholder="Repetir nueva contraseña"
-                    type="password"
-                    value={newPassword2}
-                    onChange={(e) => setNewPassword2(e.target.value)}
-                    disabled={busy}
-                  />
-                  <button
-                    style={btnStyle(busy, 'primary')}
-                    onClick={guardarNuevaPassword}
-                    disabled={busy}
-                  >
-                    Guardar
-                  </button>
+            <div style={{ fontWeight: 900, marginBottom: 10 }}>
+              {recoveryMode ? 'Nueva contraseña' : 'Acceso'}
+            </div>
 
-                  <button
-                    style={s.linkBtn}
-                    onClick={() => {
-                      setAuthView('LOGIN');
-                      setMsg('');
-                      setNewPassword('');
-                      setNewPassword2('');
-                    }}
-                    disabled={busy}
-                  >
-                    Volver a iniciar sesión
-                  </button>
+            {!recoveryMode ? (
+              <div style={{ display: 'grid', gap: 10 }}>
+                <input
+                  style={s.input}
+                  placeholder="Email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
+                <input
+                  style={s.input}
+                  placeholder="Password"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+                <button style={btnStyle(false, 'primary')} onClick={login}>
+                  Entrar
+                </button>
 
-                  <div style={s.small}>{msg}</div>
-                </div>
-              </>
-            ) : authView === 'RESET_REQUEST' ? (
-              <>
-                <div style={{ fontWeight: 900, marginBottom: 10 }}>
-                  Recuperar contraseña
-                </div>
-                <div style={{ display: 'grid', gap: 10 }}>
-                  <input
-                    style={s.input}
-                    placeholder="Tu email"
-                    value={resetEmail}
-                    onChange={(e) => setResetEmail(e.target.value)}
-                    disabled={busy}
-                  />
-                  <button
-                    style={btnStyle(busy, 'primary')}
-                    onClick={enviarResetPassword}
-                    disabled={busy}
-                  >
-                    Enviar email
+                {/* Opción 1: enlaces debajo */}
+                <div style={{ display: 'grid', gap: 6 }}>
+                  <button style={s.linkBtn} onClick={enviarReset}>
+                    ¿Has olvidado la contraseña?
                   </button>
-
-                  <button
-                    style={s.linkBtn}
-                    onClick={() => {
-                      setAuthView('LOGIN');
-                      setMsg('');
-                    }}
-                    disabled={busy}
-                  >
-                    Volver
+                  <button style={s.linkBtn} onClick={() => setShowPrivacidad(true)}>
+                    Aviso de privacidad
                   </button>
-
-                  <div style={s.small}>{msg}</div>
                 </div>
-              </>
+
+                <div style={s.small}>{msg}</div>
+              </div>
             ) : (
-              <>
-                <div style={{ fontWeight: 900, marginBottom: 10 }}>Acceso</div>
-                <div style={{ display: 'grid', gap: 10 }}>
-                  <input
-                    style={s.input}
-                    placeholder="Email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                  />
-                  <input
-                    style={s.input}
-                    placeholder="Password"
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                  />
-                  <button style={btnStyle(false, 'primary')} onClick={login}>
-                    Entrar
-                  </button>
+              <div style={{ display: 'grid', gap: 10 }}>
+                <input
+                  style={s.input}
+                  placeholder="Nueva contraseña"
+                  type="password"
+                  value={newPass}
+                  onChange={(e) => setNewPass(e.target.value)}
+                />
+                <input
+                  style={s.input}
+                  placeholder="Repite la contraseña"
+                  type="password"
+                  value={newPass2}
+                  onChange={(e) => setNewPass2(e.target.value)}
+                />
+                <button style={btnStyle(false, 'primary')} onClick={guardarNuevaPassword}>
+                  Guardar contraseña
+                </button>
 
-                  <button
-                    style={s.linkBtn}
-                    onClick={() => {
-                      setAuthView('RESET_REQUEST');
-                      setResetEmail(email || '');
-                      setMsg('');
-                    }}
-                  >
-                    ¿Olvidaste la contraseña?
-                  </button>
+                <button
+                  style={btnStyle(false, 'ghost')}
+                  onClick={() => {
+                    setRecoveryMode(false);
+                    setNewPass('');
+                    setNewPass2('');
+                    setMsg('');
+                  }}
+                >
+                  Volver
+                </button>
 
-                  <div style={s.small}>{msg}</div>
-                </div>
-              </>
+                <div style={s.small}>{msg}</div>
+              </div>
             )}
           </div>
         ) : (
           <div style={s.card}>
-            {/* Nombre del empleado */}
+            {/* Nombre del empleado + salir */}
             <div
               style={{
                 display: 'flex',
                 justifyContent: 'space-between',
                 gap: 10,
                 alignItems: 'center',
-                flexWrap: 'wrap',
               }}
             >
               <div style={s.employeePill}>
@@ -1194,7 +1243,7 @@ export default function App() {
                 onClick={logout}
                 disabled={busy || loadingPeriodo}
               >
-                Salir
+                Cerrar sesión
               </button>
             </div>
 
@@ -1271,8 +1320,8 @@ export default function App() {
                     <ul style={s.list}>
                       {hoy.map((r) => (
                         <li key={r.id} style={s.li}>
-                          <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b> —{' '}
-                          Salida: <b>{r.salida ?? '-'}</b>
+                          <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b> — Salida:{' '}
+                          <b>{r.salida ?? '-'}</b>
                           {r.nota ? ` — Nota: ${r.nota}` : ''}
                         </li>
                       ))}
@@ -1373,9 +1422,8 @@ export default function App() {
                     <ul style={s.list}>
                       {registrosPeriodo.map((r) => (
                         <li key={r.id} style={s.li}>
-                          <b>{formatearFechaDDMMYYYY(r.fecha)}</b> —{' '}
-                          <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b> —{' '}
-                          Salida: <b>{r.salida ?? '-'}</b>
+                          <b>{formatearFechaDDMMYYYY(r.fecha)}</b> — <b>{r.tipo}</b> — Entrada:{' '}
+                          <b>{r.entrada ?? '-'}</b> — Salida: <b>{r.salida ?? '-'}</b>
                           {r.nota ? ` — Nota: ${r.nota}` : ''}
                         </li>
                       ))}
@@ -1397,8 +1445,8 @@ export default function App() {
                         <ul style={{ ...s.list, marginTop: 6 }}>
                           {g.items.map((r) => (
                             <li key={r.id} style={s.li}>
-                              {r.tipo} — Entrada: <b>{r.entrada ?? '-'}</b> —{' '}
-                              Salida: <b>{r.salida ?? '-'}</b>
+                              {r.tipo} — Entrada: <b>{r.entrada ?? '-'}</b> — Salida:{' '}
+                              <b>{r.salida ?? '-'}</b>
                               {r.nota ? ` — Nota: ${r.nota}` : ''}
                             </li>
                           ))}
@@ -1440,6 +1488,13 @@ export default function App() {
             </button>
           </div>
         </div>
+      )}
+
+      {/* Modal privacidad */}
+      {showPrivacidad && (
+        <Modal title="Aviso de privacidad y aviso legal" onClose={() => setShowPrivacidad(false)}>
+          {PRIVACIDAD_TEXTO}
+        </Modal>
       )}
     </div>
   );
