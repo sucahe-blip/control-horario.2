@@ -7,7 +7,7 @@ import * as XLSX from 'xlsx';
    ========================= */
 
 const EMPRESA_NOMBRE_EXCEL = 'CAÑIZARES, INSTALACIONES Y PROYECTOS, S.A.';
-const EMPRESA_NOMBRE_UI = 'Cañizares, Instalaciones y Proyectos, S.A.';
+const EMPRESA_NOMBRE_UI = 'Cañizares S.A.';
 
 /* =========================
    FACTORES / TIEMPOS
@@ -126,7 +126,7 @@ function safeFilePart(s) {
 }
 
 /* =========================
-   EXPORT EXCEL (PLANTILLA)
+   EXPORT EXCEL
    ========================= */
 
 function buildAOAForExcel({
@@ -213,7 +213,7 @@ export default function App() {
   const [registrosPeriodo, setRegistrosPeriodo] = useState([]);
   const [loadingPeriodo, setLoadingPeriodo] = useState(false);
 
-  // ADMIN
+  // LISTA EMPLEADOS (admin/inspector)
   const [empleados, setEmpleados] = useState([]);
   const [empleadoSel, setEmpleadoSel] = useState('');
 
@@ -226,12 +226,6 @@ export default function App() {
   // Tabs
   const [tab, setTab] = useState('FICHAR'); // FICHAR | HISTORICO
 
-  // Recuperar contraseña
-  const [recovering, setRecovering] = useState(false);
-
-  // Modal privacidad
-  const [showPrivacidad, setShowPrivacidad] = useState(false);
-
   // Reloj
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -239,12 +233,21 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  const empleadoObjetivoId = profile?.es_admin
-    ? empleadoSel || profile?.empleado_id
+  const esInspector = profile?.rol === 'inspector';
+  const esAdmin = profile?.rol === 'admin' || !!profile?.es_admin;
+
+  const puedeVerTodos = esAdmin || esInspector;
+
+  // empleado objetivo (si soy inspector/admin puedo elegir)
+  const empleadoObjetivoId = puedeVerTodos
+    ? (empleadoSel || profile?.empleado_id)
     : profile?.empleado_id;
 
   const estoyViendoMiEmpleado =
     !!profile?.empleado_id && empleadoObjetivoId === profile.empleado_id;
+
+  // Solo puede editar/fichar si NO es inspector y está viendo su empleado
+  const puedeEditar = !esInspector && estoyViendoMiEmpleado;
 
   /* -------- Formatos fecha/hora -------- */
   const fechaLarga = useMemo(() => {
@@ -288,8 +291,6 @@ export default function App() {
       setNota('');
       setTab('FICHAR');
       setMsg('');
-      setRecovering(false);
-      setShowPrivacidad(false);
     });
 
     return () => sub.subscription.unsubscribe();
@@ -303,7 +304,7 @@ export default function App() {
       setMsg('Cargando perfil...');
       const { data, error } = await supabase
         .from('usuarios')
-        .select('user_id, empleado_id, es_admin')
+        .select('user_id, empleado_id, es_admin, rol')
         .eq('user_id', session.user.id)
         .maybeSingle();
 
@@ -316,10 +317,10 @@ export default function App() {
     run();
   }, [session]);
 
-  /* -------- Admin: empleados -------- */
+  /* -------- Cargar lista empleados (admin/inspector) -------- */
   useEffect(() => {
     const cargarEmpleados = async () => {
-      if (!profile?.es_admin) return;
+      if (!puedeVerTodos) return;
 
       const { data, error } = await supabase
         .from('empleados')
@@ -331,13 +332,20 @@ export default function App() {
         return;
       }
 
-      setEmpleados(data ?? []);
-      if (!empleadoSel && profile?.empleado_id) setEmpleadoSel(profile.empleado_id);
+      const list = data ?? [];
+      setEmpleados(list);
+
+      // Si no hay seleccionado, intentamos poner el propio (si existe)
+      if (!empleadoSel && profile?.empleado_id) {
+        setEmpleadoSel(profile.empleado_id);
+      } else if (!empleadoSel && list.length > 0) {
+        // inspector sin empleado_id: selecciona el primero
+        setEmpleadoSel(list[0].id);
+      }
     };
 
     cargarEmpleados();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.es_admin, profile?.empleado_id]);
+  }, [puedeVerTodos, profile?.empleado_id]); // NO meto empleadoSel para evitar bucle
 
   /* -------- Nombre empleado (UI y Excel) -------- */
   useEffect(() => {
@@ -452,13 +460,11 @@ export default function App() {
     if (!empleadoObjetivoId) return;
     cargarEstadoDia();
     cargarPeriodo(modo, fechaSel);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [empleadoObjetivoId]);
+  }, [empleadoObjetivoId]); // al cambiar empleado
 
   useEffect(() => {
     if (!empleadoObjetivoId) return;
     cargarPeriodo(modo, fechaSel);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modo, fechaSel, empleadoObjetivoId]);
 
   /* -------- Login / Logout -------- */
@@ -485,31 +491,13 @@ export default function App() {
     setMsg('Sesión cerrada');
   };
 
-  const enviarRecuperacion = async () => {
-    const emailTrim = (email || '').trim();
-    if (!emailTrim) {
-      setMsg('Introduce tu email para recuperar la contraseña.');
-      return;
-    }
-    setBusy(true);
-    setMsg('Enviando email de recuperación...');
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(emailTrim);
-      if (error) setMsg('ERROR: ' + error.message);
-      else setMsg('✅ Te hemos enviado un email para restablecer la contraseña.');
-    } finally {
-      setBusy(false);
-      setRecovering(false);
-    }
-  };
-
   /* =========================
      FICHAJES (solo Trabajo/Pausa)
      ========================= */
 
   async function entradaTrabajo() {
     if (!profile?.empleado_id) return;
-    if (!estoyViendoMiEmpleado) return;
+    if (!puedeEditar) return;
     if (busy) return;
 
     if (abiertoTrabajo || abiertoPausa) {
@@ -546,7 +534,7 @@ export default function App() {
 
   async function salidaTrabajo() {
     if (!profile?.empleado_id) return;
-    if (!estoyViendoMiEmpleado) return;
+    if (!puedeEditar) return;
     if (busy) return;
 
     if (!abiertoTrabajo) {
@@ -587,7 +575,7 @@ export default function App() {
   // Iniciar pausa: cierra Trabajo y abre Pausa (para cumplir “1 abierto”)
   async function iniciarPausa() {
     if (!profile?.empleado_id) return;
-    if (!estoyViendoMiEmpleado) return;
+    if (!puedeEditar) return;
     if (busy) return;
 
     if (!abiertoTrabajo) {
@@ -641,7 +629,7 @@ export default function App() {
   // Reanudar: cierra Pausa y abre Trabajo
   async function terminarPausa() {
     if (!profile?.empleado_id) return;
-    if (!estoyViendoMiEmpleado) return;
+    if (!puedeEditar) return;
     if (busy) return;
 
     if (!abiertoPausa) {
@@ -736,21 +724,16 @@ export default function App() {
       padding: 14,
       boxShadow: '0 10px 25px rgba(0,0,0,.08)',
     },
-
-    // ✅ AJUSTE: permite que en móvil salte de línea sin descuadrarse
     headerTop: {
       display: 'flex',
-      alignItems: 'flex-start',
+      alignItems: 'center',
       justifyContent: 'space-between',
       gap: 10,
-      flexWrap: 'wrap',
+      minWidth: 0,
     },
-
-    brand: { display: 'flex', flexDirection: 'column', gap: 2 },
+    brand: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 },
     brandName: { fontWeight: 900, fontSize: 22, lineHeight: 1.1 },
     brandSub: { fontSize: 13, opacity: 0.9, fontWeight: 800 },
-
-    // ✅ AJUSTE: fecha sin recorte raro y alineada
     datePill: {
       background: 'rgba(255,255,255,.16)',
       border: '1px solid rgba(255,255,255,.25)',
@@ -759,28 +742,24 @@ export default function App() {
       fontSize: 12,
       fontWeight: 800,
       whiteSpace: 'nowrap',
-      maxWidth: '100%',
-      marginLeft: 'auto',
+      maxWidth: 170,
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
     },
-
-    // ✅ AJUSTE: reloj y estado pueden bajar de línea
     clock: {
       marginTop: 10,
       display: 'flex',
       gap: 12,
-      alignItems: 'flex-end',
+      alignItems: 'center',
       justifyContent: 'space-between',
-      flexWrap: 'wrap',
+      minWidth: 0,
     },
-
     clockBig: {
       fontSize: 34,
       fontWeight: 900,
       letterSpacing: 0.5,
       lineHeight: 1,
     },
-
-    // ✅ AJUSTE: estado no se sale
     statusPill: {
       background: 'rgba(255,255,255,.16)',
       border: '1px solid rgba(255,255,255,.25)',
@@ -790,10 +769,9 @@ export default function App() {
       fontWeight: 900,
       textAlign: 'right',
       minWidth: 160,
-      maxWidth: '100%',
-      marginLeft: 'auto',
+      maxWidth: 200,
+      overflow: 'hidden',
     },
-
     tabs: { marginTop: 12, display: 'flex', gap: 10 },
     tabBtn: (active) => ({
       flex: 1,
@@ -820,7 +798,7 @@ export default function App() {
       borderRadius: 12,
       border: `1px solid ${C.borde}`,
       background: C.blanco,
-      minWidth: 160,
+      minWidth: 180,
       fontWeight: 900,
     },
     input: {
@@ -829,7 +807,7 @@ export default function App() {
       border: `1px solid ${C.borde}`,
       width: '100%',
       boxSizing: 'border-box',
-      fontSize: 16,
+      fontSize: 16, // evita zoom iPhone
     },
     hr: { border: 0, borderTop: `1px solid ${C.borde}`, margin: '14px 0' },
     small: { fontSize: 12, color: C.gris, fontWeight: 800 },
@@ -916,46 +894,22 @@ export default function App() {
       border: `1px solid ${C.borde}`,
       background: C.blanco,
       fontWeight: 900,
+      maxWidth: '70%',
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
     },
 
-    linkLine: {
+    inspectorBadge: {
       marginTop: 10,
-      display: 'flex',
-      gap: 18,
-      flexWrap: 'wrap',
-    },
-    linkBtn: {
-      background: 'transparent',
-      border: 0,
-      padding: 0,
-      color: C.rojo,
-      fontWeight: 900,
-      cursor: 'pointer',
-    },
-
-    modalBackdrop: {
-      position: 'fixed',
-      inset: 0,
-      background: 'rgba(0,0,0,.35)',
-      display: 'flex',
-      alignItems: 'flex-end',
-      justifyContent: 'center',
-      padding: 12,
-      zIndex: 9999,
-    },
-    modal: {
-      width: '100%',
-      maxWidth: 520,
-      background: C.blanco,
-      borderRadius: 18,
+      padding: '10px 12px',
+      borderRadius: 14,
       border: `1px solid ${C.borde}`,
-      boxShadow: '0 20px 40px rgba(0,0,0,.25)',
-      padding: 14,
-      maxHeight: '80vh',
-      overflow: 'auto',
+      background: '#fff7ed',
+      color: '#7c2d12',
+      fontWeight: 900,
+      fontSize: 13,
     },
-    modalTitle: { fontWeight: 900, fontSize: 16, marginBottom: 8 },
-    modalP: { fontSize: 13, color: C.negro, lineHeight: 1.35, margin: '8px 0' },
   };
 
   const btnStyle = (disabled, variant) => ({
@@ -974,7 +928,7 @@ export default function App() {
       ? 'Reanudar'
       : 'Iniciar pausa';
 
-  const autoDisabled = !estoyViendoMiEmpleado || busy || loadingPeriodo;
+  const autoDisabled = !puedeEditar || busy || loadingPeriodo;
 
   const autoAction = async () => {
     if (!abiertoTrabajo && !abiertoPausa) return entradaTrabajo();
@@ -983,63 +937,11 @@ export default function App() {
   };
 
   const finDisabled =
-    !estoyViendoMiEmpleado ||
+    !puedeEditar ||
     busy ||
     loadingPeriodo ||
     !abiertoTrabajo ||
     !!abiertoPausa;
-
-  /* =========================
-     Texto privacidad (Opción 1)
-     ========================= */
-
-  const privacidadTexto = (
-    <>
-      <div style={s.modalTitle}>Aviso de privacidad</div>
-
-      <p style={s.modalP}>
-        <b>Responsable:</b> Cañizares, Instalaciones y Proyectos, S.A. (CIF: A78593316),
-        Calle Islas Cíes 35, 28035 Madrid. Email: canizares@jcanizares.com
-      </p>
-
-      <p style={s.modalP}>
-        <b>Finalidad:</b> Gestión del registro diario de jornada, control horario y elaboración de
-        informes/estadísticas asociadas al cumplimiento de la normativa laboral.
-      </p>
-
-      <p style={s.modalP}>
-        <b>Base jurídica:</b> Cumplimiento de una obligación legal en materia de registro de jornada y,
-        en su caso, interés legítimo de la empresa en la gestión organizativa.
-      </p>
-
-      <p style={s.modalP}>
-        <b>Datos tratados:</b> Usuario (email), identificador de empleado, registros de entrada/salida,
-        pausas y notas asociadas al fichaje.
-      </p>
-
-      <p style={s.modalP}>
-        <b>Destinatarios:</b> No se cederán datos a terceros salvo obligación legal. Proveedores
-        tecnológicos (p. ej. hosting/BD) podrán acceder a datos como encargados del tratamiento.
-      </p>
-
-      <p style={s.modalP}>
-        <b>Conservación:</b> Durante el tiempo legalmente exigible y, en su caso, durante los plazos
-        necesarios para atender responsabilidades derivadas.
-      </p>
-
-      <p style={s.modalP}>
-        <b>Derechos:</b> Acceso, rectificación, supresión, limitación y oposición, cuando proceda.
-        Para ejercerlos, escribe a <b>canizares@jcanizares.com</b>. También puedes presentar una
-        reclamación ante la AEPD.
-      </p>
-
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
-        <button style={btnStyle(false, 'primary')} onClick={() => setShowPrivacidad(false)}>
-          Cerrar
-        </button>
-      </div>
-    </>
-  );
 
   /* =========================
      RENDER
@@ -1070,6 +972,12 @@ export default function App() {
             </div>
           </div>
 
+          {esInspector && (
+            <div style={s.inspectorBadge}>
+              🕵️ Modo inspección: solo lectura (sin fichar / sin modificar)
+            </div>
+          )}
+
           <div style={s.tabs}>
             <button
               style={s.tabBtn(tab === 'FICHAR')}
@@ -1091,76 +999,29 @@ export default function App() {
         {!session ? (
           <div style={s.loginBox}>
             <div style={{ fontWeight: 900, marginBottom: 10 }}>Acceso</div>
-
-            {!recovering ? (
-              <div style={{ display: 'grid', gap: 10 }}>
-                <input
-                  style={s.input}
-                  placeholder="Email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                />
-                <input
-                  style={s.input}
-                  placeholder="Password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-
-                <button style={btnStyle(false, 'primary')} onClick={login} disabled={busy}>
-                  Entrar
-                </button>
-
-                <div style={s.linkLine}>
-                  <button style={s.linkBtn} onClick={() => setRecovering(true)} disabled={busy}>
-                    ¿Has olvidado la contraseña?
-                  </button>
-
-                  <button style={s.linkBtn} onClick={() => setShowPrivacidad(true)}>
-                    Aviso de privacidad
-                  </button>
-                </div>
-
-                <div style={s.small}>{msg}</div>
-              </div>
-            ) : (
-              <div style={{ display: 'grid', gap: 10 }}>
-                <div style={{ fontWeight: 900 }}>Recuperar contraseña</div>
-                <div style={s.small}>
-                  Introduce tu email y te enviaremos un enlace para restablecer la contraseña.
-                </div>
-
-                <input
-                  style={s.input}
-                  placeholder="Email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                />
-
-                <button
-                  style={btnStyle(busy, 'primary')}
-                  onClick={enviarRecuperacion}
-                  disabled={busy}
-                >
-                  Enviar email
-                </button>
-
-                <button
-                  style={btnStyle(busy, 'ghost')}
-                  onClick={() => setRecovering(false)}
-                  disabled={busy}
-                >
-                  Volver
-                </button>
-
-                <div style={s.small}>{msg}</div>
-              </div>
-            )}
+            <div style={{ display: 'grid', gap: 10 }}>
+              <input
+                style={s.input}
+                placeholder="Email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+              <input
+                style={s.input}
+                placeholder="Password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <button style={btnStyle(false, 'primary')} onClick={login}>
+                Entrar
+              </button>
+              <div style={s.small}>{msg}</div>
+            </div>
           </div>
         ) : (
           <div style={s.card}>
-            {/* Nombre del empleado */}
+            {/* Cabecera usuario + logout */}
             <div
               style={{
                 display: 'flex',
@@ -1169,11 +1030,13 @@ export default function App() {
                 alignItems: 'center',
               }}
             >
-              <div style={s.employeePill}>
+              <div style={s.employeePill} title={empleadoNombre}>
                 <span role="img" aria-label="user">
                   👤
                 </span>
-                <span>{empleadoNombre || '(Sin nombre)'}</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {empleadoNombre || '(Sin nombre)'}
+                </span>
               </div>
 
               <button
@@ -1187,7 +1050,8 @@ export default function App() {
 
             <div style={s.hr} />
 
-            {profile?.es_admin && (
+            {/* Selector empleados para ADMIN o INSPECTOR */}
+            {puedeVerTodos && (
               <>
                 <div style={{ ...s.row, justifyContent: 'space-between' }}>
                   <div style={s.row}>
@@ -1204,6 +1068,7 @@ export default function App() {
                         </option>
                       ))}
                     </select>
+
                     <button
                       style={btnStyle(busy || loadingPeriodo, 'ghost')}
                       onClick={async () => {
@@ -1217,7 +1082,9 @@ export default function App() {
                   </div>
 
                   {!estoyViendoMiEmpleado && (
-                    <div style={{ ...s.small, fontWeight: 900 }}>(Viendo otro empleado)</div>
+                    <div style={{ ...s.small, fontWeight: 900 }}>
+                      (Viendo otro empleado)
+                    </div>
                   )}
                 </div>
 
@@ -1231,10 +1098,14 @@ export default function App() {
                   <div style={s.label}>Nota</div>
                   <input
                     style={s.input}
-                    placeholder="(Opcional) Se guardará en el próximo fichaje"
+                    placeholder={
+                      esInspector
+                        ? 'Modo inspección: no se puede añadir nota'
+                        : '(Opcional) Se guardará en el próximo fichaje'
+                    }
                     value={nota}
                     onChange={(e) => setNota(e.target.value)}
-                    disabled={!estoyViendoMiEmpleado || busy || loadingPeriodo}
+                    disabled={!puedeEditar || busy || loadingPeriodo}
                   />
                   <div style={{ ...s.small, marginTop: 6 }}>
                     Ej.: motivo de ausencia, detalle del día, etc.
@@ -1246,7 +1117,9 @@ export default function App() {
                 <div style={s.hr} />
 
                 <div>
-                  <div style={{ fontWeight: 900, marginBottom: 8 }}>Registro de hoy</div>
+                  <div style={{ fontWeight: 900, marginBottom: 8 }}>
+                    Registro de hoy
+                  </div>
 
                   {hoy.length === 0 ? (
                     <div style={s.small}>(Sin registros hoy)</div>
@@ -1254,8 +1127,8 @@ export default function App() {
                     <ul style={s.list}>
                       {hoy.map((r) => (
                         <li key={r.id} style={s.li}>
-                          <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b> — Salida:{' '}
-                          <b>{r.salida ?? '-'}</b>
+                          <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b> —
+                          Salida: <b>{r.salida ?? '-'}</b>
                           {r.nota ? ` — Nota: ${r.nota}` : ''}
                         </li>
                       ))}
@@ -1263,7 +1136,8 @@ export default function App() {
                   )}
 
                   <div style={{ marginTop: 10, fontWeight: 900 }}>
-                    Total neto de hoy: <span style={{ color: C.rojo }}>{totalHoyHHMM}</span> h
+                    Total neto de hoy:{' '}
+                    <span style={{ color: C.rojo }}>{totalHoyHHMM}</span> h
                   </div>
                 </div>
               </div>
@@ -1355,8 +1229,9 @@ export default function App() {
                     <ul style={s.list}>
                       {registrosPeriodo.map((r) => (
                         <li key={r.id} style={s.li}>
-                          <b>{formatearFechaDDMMYYYY(r.fecha)}</b> — <b>{r.tipo}</b> — Entrada:{' '}
-                          <b>{r.entrada ?? '-'}</b> — Salida: <b>{r.salida ?? '-'}</b>
+                          <b>{formatearFechaDDMMYYYY(r.fecha)}</b> —{' '}
+                          <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b> —
+                          Salida: <b>{r.salida ?? '-'}</b>
                           {r.nota ? ` — Nota: ${r.nota}` : ''}
                         </li>
                       ))}
@@ -1370,7 +1245,10 @@ export default function App() {
                       <div key={g.fecha} style={{ marginBottom: 12 }}>
                         <div style={{ fontWeight: 900 }}>
                           {formatearFechaDDMMYYYY(g.fecha)} — Total neto:{' '}
-                          <span style={{ color: C.rojo }}>{minutesToHHMM(g.totalMin)}</span> h
+                          <span style={{ color: C.rojo }}>
+                            {minutesToHHMM(g.totalMin)}
+                          </span>{' '}
+                          h
                         </div>
                         <ul style={{ ...s.list, marginTop: 6 }}>
                           {g.items.map((r) => (
@@ -1391,8 +1269,8 @@ export default function App() {
         )}
       </div>
 
-      {/* Barra inferior sticky con botones grandes */}
-      {session && tab === 'FICHAR' && (
+      {/* Barra inferior sticky con botones grandes SOLO si puede editar y está en Inicio */}
+      {session && tab === 'FICHAR' && !esInspector && (
         <div style={s.bottomBar}>
           <div style={s.bottomInner}>
             <button
@@ -1416,15 +1294,6 @@ export default function App() {
             >
               Finalizar jornada
             </button>
-          </div>
-        </div>
-      )}
-
-      {/* Modal privacidad */}
-      {showPrivacidad && (
-        <div style={s.modalBackdrop} onClick={() => setShowPrivacidad(false)}>
-          <div style={s.modal} onClick={(e) => e.stopPropagation()}>
-            {privacidadTexto}
           </div>
         </div>
       )}
