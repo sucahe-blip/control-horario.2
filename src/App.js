@@ -6,8 +6,16 @@ import * as XLSX from 'xlsx';
    CONFIG
    ========================= */
 
-const EMPRESA_NOMBRE_EXCEL = 'CAÑIZARES, INSTALACIONES Y PROYECTOS, S.A.';
+const EMPRESA_NOMBRE_EXCEL = 'CAÑIZARES, S.A.';
 const EMPRESA_NOMBRE_UI = 'Cañizares S.A.';
+
+/* Datos legales (Opción 1) */
+const PRIV = {
+  empresa: 'Cañizares, Instalaciones y Proyectos, S.A.',
+  cif: 'A78593316',
+  direccion: 'Calle Islas Cíes 35, 28035 Madrid',
+  email: 'canizares@jcanizares.com',
+};
 
 /* =========================
    FACTORES / TIEMPOS
@@ -126,7 +134,7 @@ function safeFilePart(s) {
 }
 
 /* =========================
-   EXPORT EXCEL
+   EXPORT EXCEL (PLANTILLA)
    ========================= */
 
 function buildAOAForExcel({
@@ -213,7 +221,7 @@ export default function App() {
   const [registrosPeriodo, setRegistrosPeriodo] = useState([]);
   const [loadingPeriodo, setLoadingPeriodo] = useState(false);
 
-  // LISTA EMPLEADOS (admin/inspector)
+  // ADMIN
   const [empleados, setEmpleados] = useState([]);
   const [empleadoSel, setEmpleadoSel] = useState('');
 
@@ -226,6 +234,9 @@ export default function App() {
   // Tabs
   const [tab, setTab] = useState('FICHAR'); // FICHAR | HISTORICO
 
+  // Modales sencillos
+  const [showPriv, setShowPriv] = useState(false);
+
   // Reloj
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -233,21 +244,12 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  const esInspector = profile?.rol === 'inspector';
-  const esAdmin = profile?.rol === 'admin' || !!profile?.es_admin;
-
-  const puedeVerTodos = esAdmin || esInspector;
-
-  // empleado objetivo (si soy inspector/admin puedo elegir)
-  const empleadoObjetivoId = puedeVerTodos
-    ? (empleadoSel || profile?.empleado_id)
+  const empleadoObjetivoId = profile?.es_admin
+    ? empleadoSel || profile?.empleado_id
     : profile?.empleado_id;
 
   const estoyViendoMiEmpleado =
     !!profile?.empleado_id && empleadoObjetivoId === profile.empleado_id;
-
-  // Solo puede editar/fichar si NO es inspector y está viendo su empleado
-  const puedeEditar = !esInspector && estoyViendoMiEmpleado;
 
   /* -------- Formatos fecha/hora -------- */
   const fechaLarga = useMemo(() => {
@@ -265,9 +267,7 @@ export default function App() {
   }, [now]);
 
   const horaGrande = useMemo(() => {
-    return `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(
-      now.getSeconds()
-    )}`;
+    return `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
   }, [now]);
 
   /* -------- Auth -------- */
@@ -304,7 +304,7 @@ export default function App() {
       setMsg('Cargando perfil...');
       const { data, error } = await supabase
         .from('usuarios')
-        .select('user_id, empleado_id, es_admin, rol')
+        .select('user_id, empleado_id, es_admin')
         .eq('user_id', session.user.id)
         .maybeSingle();
 
@@ -317,10 +317,10 @@ export default function App() {
     run();
   }, [session]);
 
-  /* -------- Cargar lista empleados (admin/inspector) -------- */
+  /* -------- Admin: empleados -------- */
   useEffect(() => {
     const cargarEmpleados = async () => {
-      if (!puedeVerTodos) return;
+      if (!profile?.es_admin) return;
 
       const { data, error } = await supabase
         .from('empleados')
@@ -332,20 +332,13 @@ export default function App() {
         return;
       }
 
-      const list = data ?? [];
-      setEmpleados(list);
-
-      // Si no hay seleccionado, intentamos poner el propio (si existe)
-      if (!empleadoSel && profile?.empleado_id) {
-        setEmpleadoSel(profile.empleado_id);
-      } else if (!empleadoSel && list.length > 0) {
-        // inspector sin empleado_id: selecciona el primero
-        setEmpleadoSel(list[0].id);
-      }
+      setEmpleados(data ?? []);
+      if (!empleadoSel && profile?.empleado_id) setEmpleadoSel(profile.empleado_id);
     };
 
     cargarEmpleados();
-  }, [puedeVerTodos, profile?.empleado_id]); // NO meto empleadoSel para evitar bucle
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.es_admin, profile?.empleado_id]);
 
   /* -------- Nombre empleado (UI y Excel) -------- */
   useEffect(() => {
@@ -460,11 +453,13 @@ export default function App() {
     if (!empleadoObjetivoId) return;
     cargarEstadoDia();
     cargarPeriodo(modo, fechaSel);
-  }, [empleadoObjetivoId]); // al cambiar empleado
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [empleadoObjetivoId]);
 
   useEffect(() => {
     if (!empleadoObjetivoId) return;
     cargarPeriodo(modo, fechaSel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modo, fechaSel, empleadoObjetivoId]);
 
   /* -------- Login / Logout -------- */
@@ -491,13 +486,30 @@ export default function App() {
     setMsg('Sesión cerrada');
   };
 
+  /* -------- Recuperar contraseña -------- */
+  const recuperarPassword = async () => {
+    const mail = (email || '').trim();
+    if (!mail) {
+      setMsg('Escribe tu email arriba y pulsa “¿Has olvidado la contraseña?”');
+      return;
+    }
+
+    setMsg('Enviando email de recuperación...');
+    const { error } = await supabase.auth.resetPasswordForEmail(mail, {
+      redirectTo: window.location.origin,
+    });
+
+    if (error) setMsg('ERROR: ' + error.message);
+    else setMsg('✅ Te hemos enviado un email para restablecer la contraseña.');
+  };
+
   /* =========================
      FICHAJES (solo Trabajo/Pausa)
      ========================= */
 
   async function entradaTrabajo() {
     if (!profile?.empleado_id) return;
-    if (!puedeEditar) return;
+    if (!estoyViendoMiEmpleado) return;
     if (busy) return;
 
     if (abiertoTrabajo || abiertoPausa) {
@@ -534,7 +546,7 @@ export default function App() {
 
   async function salidaTrabajo() {
     if (!profile?.empleado_id) return;
-    if (!puedeEditar) return;
+    if (!estoyViendoMiEmpleado) return;
     if (busy) return;
 
     if (!abiertoTrabajo) {
@@ -575,7 +587,7 @@ export default function App() {
   // Iniciar pausa: cierra Trabajo y abre Pausa (para cumplir “1 abierto”)
   async function iniciarPausa() {
     if (!profile?.empleado_id) return;
-    if (!puedeEditar) return;
+    if (!estoyViendoMiEmpleado) return;
     if (busy) return;
 
     if (!abiertoTrabajo) {
@@ -629,7 +641,7 @@ export default function App() {
   // Reanudar: cierra Pausa y abre Trabajo
   async function terminarPausa() {
     if (!profile?.empleado_id) return;
-    if (!puedeEditar) return;
+    if (!estoyViendoMiEmpleado) return;
     if (busy) return;
 
     if (!abiertoPausa) {
@@ -730,10 +742,12 @@ export default function App() {
       justifyContent: 'space-between',
       gap: 10,
       minWidth: 0,
+      flexWrap: 'wrap',
     },
     brand: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 },
     brandName: { fontWeight: 900, fontSize: 22, lineHeight: 1.1 },
     brandSub: { fontSize: 13, opacity: 0.9, fontWeight: 800 },
+
     datePill: {
       background: 'rgba(255,255,255,.16)',
       border: '1px solid rgba(255,255,255,.25)',
@@ -742,10 +756,12 @@ export default function App() {
       fontSize: 12,
       fontWeight: 800,
       whiteSpace: 'nowrap',
-      maxWidth: 170,
+      maxWidth: '100%',
       overflow: 'hidden',
       textOverflow: 'ellipsis',
     },
+
+    /* ✅ FIX MÓVIL: que no se descuadre */
     clock: {
       marginTop: 10,
       display: 'flex',
@@ -753,13 +769,16 @@ export default function App() {
       alignItems: 'center',
       justifyContent: 'space-between',
       minWidth: 0,
+      flexWrap: 'wrap',
     },
+
     clockBig: {
       fontSize: 34,
       fontWeight: 900,
       letterSpacing: 0.5,
       lineHeight: 1,
     },
+
     statusPill: {
       background: 'rgba(255,255,255,.16)',
       border: '1px solid rgba(255,255,255,.25)',
@@ -768,10 +787,12 @@ export default function App() {
       fontSize: 12,
       fontWeight: 900,
       textAlign: 'right',
-      minWidth: 160,
-      maxWidth: 200,
+      minWidth: 0,
+      flex: '1 1 160px',
+      maxWidth: '100%',
       overflow: 'hidden',
     },
+
     tabs: { marginTop: 12, display: 'flex', gap: 10 },
     tabBtn: (active) => ({
       flex: 1,
@@ -798,7 +819,7 @@ export default function App() {
       borderRadius: 12,
       border: `1px solid ${C.borde}`,
       background: C.blanco,
-      minWidth: 180,
+      minWidth: 160,
       fontWeight: 900,
     },
     input: {
@@ -807,13 +828,25 @@ export default function App() {
       border: `1px solid ${C.borde}`,
       width: '100%',
       boxSizing: 'border-box',
-      fontSize: 16, // evita zoom iPhone
+      fontSize: 16,
     },
     hr: { border: 0, borderTop: `1px solid ${C.borde}`, margin: '14px 0' },
     small: { fontSize: 12, color: C.gris, fontWeight: 800 },
     list: { margin: 0, paddingLeft: 18 },
     li: { margin: '8px 0', lineHeight: 1.25 },
     msg: { marginTop: 10, fontWeight: 900, color: C.negro },
+
+    linkBtn: {
+      background: 'transparent',
+      border: 0,
+      padding: 0,
+      marginTop: 6,
+      color: C.rojo,
+      fontWeight: 900,
+      textAlign: 'left',
+      cursor: 'pointer',
+      fontSize: 14,
+    },
 
     btn: (variant = 'primary') => {
       const isPrimary = variant === 'primary';
@@ -894,22 +927,31 @@ export default function App() {
       border: `1px solid ${C.borde}`,
       background: C.blanco,
       fontWeight: 900,
-      maxWidth: '70%',
-      overflow: 'hidden',
-      textOverflow: 'ellipsis',
-      whiteSpace: 'nowrap',
     },
 
-    inspectorBadge: {
-      marginTop: 10,
-      padding: '10px 12px',
-      borderRadius: 14,
-      border: `1px solid ${C.borde}`,
-      background: '#fff7ed',
-      color: '#7c2d12',
-      fontWeight: 900,
-      fontSize: 13,
+    /* Modal simple */
+    modalOverlay: {
+      position: 'fixed',
+      inset: 0,
+      background: 'rgba(0,0,0,.45)',
+      display: 'flex',
+      alignItems: 'flex-end',
+      justifyContent: 'center',
+      padding: 14,
+      zIndex: 9999,
     },
+    modal: {
+      width: '100%',
+      maxWidth: 520,
+      background: C.blanco,
+      borderRadius: 18,
+      border: `1px solid ${C.borde}`,
+      padding: 14,
+      boxShadow: '0 20px 50px rgba(0,0,0,.25)',
+    },
+    modalTitle: { fontWeight: 900, fontSize: 16, marginBottom: 8 },
+    modalText: { fontSize: 13, color: C.negro, lineHeight: 1.35 },
+    modalCloseRow: { display: 'flex', justifyContent: 'flex-end', marginTop: 12 },
   };
 
   const btnStyle = (disabled, variant) => ({
@@ -928,7 +970,7 @@ export default function App() {
       ? 'Reanudar'
       : 'Iniciar pausa';
 
-  const autoDisabled = !puedeEditar || busy || loadingPeriodo;
+  const autoDisabled = !estoyViendoMiEmpleado || busy || loadingPeriodo;
 
   const autoAction = async () => {
     if (!abiertoTrabajo && !abiertoPausa) return entradaTrabajo();
@@ -937,7 +979,7 @@ export default function App() {
   };
 
   const finDisabled =
-    !puedeEditar ||
+    !estoyViendoMiEmpleado ||
     busy ||
     loadingPeriodo ||
     !abiertoTrabajo ||
@@ -960,23 +1002,19 @@ export default function App() {
           </div>
 
           <div style={s.clock}>
-            <div>
+            {/* ✅ FIX: permitir encoger en móvil */}
+            <div style={{ flex: '1 1 220px', minWidth: 0 }}>
               <div style={{ fontSize: 12, opacity: 0.9, fontWeight: 800 }}>
                 Hora actual
               </div>
               <div style={s.clockBig}>{horaGrande}</div>
             </div>
+
             <div style={s.statusPill}>
               <div style={{ opacity: 0.9 }}>Estado</div>
               <div style={{ marginTop: 4 }}>{estadoTexto}</div>
             </div>
           </div>
-
-          {esInspector && (
-            <div style={s.inspectorBadge}>
-              🕵️ Modo inspección: solo lectura (sin fichar / sin modificar)
-            </div>
-          )}
 
           <div style={s.tabs}>
             <button
@@ -1013,15 +1051,25 @@ export default function App() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
+
               <button style={btnStyle(false, 'primary')} onClick={login}>
                 Entrar
               </button>
+
+              <button style={s.linkBtn} onClick={recuperarPassword}>
+                ¿Has olvidado la contraseña?
+              </button>
+
+              <button style={s.linkBtn} onClick={() => setShowPriv(true)}>
+                Aviso de privacidad
+              </button>
+
               <div style={s.small}>{msg}</div>
             </div>
           </div>
         ) : (
           <div style={s.card}>
-            {/* Cabecera usuario + logout */}
+            {/* Nombre del empleado */}
             <div
               style={{
                 display: 'flex',
@@ -1030,13 +1078,11 @@ export default function App() {
                 alignItems: 'center',
               }}
             >
-              <div style={s.employeePill} title={empleadoNombre}>
+              <div style={s.employeePill}>
                 <span role="img" aria-label="user">
                   👤
                 </span>
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {empleadoNombre || '(Sin nombre)'}
-                </span>
+                <span>{empleadoNombre || '(Sin nombre)'}</span>
               </div>
 
               <button
@@ -1050,8 +1096,7 @@ export default function App() {
 
             <div style={s.hr} />
 
-            {/* Selector empleados para ADMIN o INSPECTOR */}
-            {puedeVerTodos && (
+            {profile?.es_admin && (
               <>
                 <div style={{ ...s.row, justifyContent: 'space-between' }}>
                   <div style={s.row}>
@@ -1068,7 +1113,6 @@ export default function App() {
                         </option>
                       ))}
                     </select>
-
                     <button
                       style={btnStyle(busy || loadingPeriodo, 'ghost')}
                       onClick={async () => {
@@ -1098,14 +1142,10 @@ export default function App() {
                   <div style={s.label}>Nota</div>
                   <input
                     style={s.input}
-                    placeholder={
-                      esInspector
-                        ? 'Modo inspección: no se puede añadir nota'
-                        : '(Opcional) Se guardará en el próximo fichaje'
-                    }
+                    placeholder="(Opcional) Se guardará en el próximo fichaje"
                     value={nota}
                     onChange={(e) => setNota(e.target.value)}
-                    disabled={!puedeEditar || busy || loadingPeriodo}
+                    disabled={!estoyViendoMiEmpleado || busy || loadingPeriodo}
                   />
                   <div style={{ ...s.small, marginTop: 6 }}>
                     Ej.: motivo de ausencia, detalle del día, etc.
@@ -1229,9 +1269,9 @@ export default function App() {
                     <ul style={s.list}>
                       {registrosPeriodo.map((r) => (
                         <li key={r.id} style={s.li}>
-                          <b>{formatearFechaDDMMYYYY(r.fecha)}</b> —{' '}
-                          <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b> —
-                          Salida: <b>{r.salida ?? '-'}</b>
+                          <b>{formatearFechaDDMMYYYY(r.fecha)}</b> — <b>{r.tipo}</b>{' '}
+                          — Entrada: <b>{r.entrada ?? '-'}</b> — Salida:{' '}
+                          <b>{r.salida ?? '-'}</b>
                           {r.nota ? ` — Nota: ${r.nota}` : ''}
                         </li>
                       ))}
@@ -1269,8 +1309,8 @@ export default function App() {
         )}
       </div>
 
-      {/* Barra inferior sticky con botones grandes SOLO si puede editar y está en Inicio */}
-      {session && tab === 'FICHAR' && !esInspector && (
+      {/* Barra inferior sticky con botones grandes */}
+      {session && tab === 'FICHAR' && (
         <div style={s.bottomBar}>
           <div style={s.bottomInner}>
             <button
@@ -1294,6 +1334,42 @@ export default function App() {
             >
               Finalizar jornada
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Aviso de Privacidad */}
+      {showPriv && (
+        <div style={s.modalOverlay} onClick={() => setShowPriv(false)}>
+          <div style={s.modal} onClick={(e) => e.stopPropagation()}>
+            <div style={s.modalTitle}>Aviso de privacidad</div>
+            <div style={s.modalText}>
+              <p style={{ marginTop: 0 }}>
+                <b>Responsable:</b> {PRIV.empresa} (CIF {PRIV.cif}), {PRIV.direccion}.
+              </p>
+              <p>
+                <b>Finalidad:</b> registrar la jornada (entradas/salidas/pausas) y permitir
+                la consulta y exportación del histórico.
+              </p>
+              <p>
+                <b>Base legal:</b> cumplimiento de obligaciones laborales y gestión interna.
+              </p>
+              <p>
+                <b>Conservación:</b> durante los plazos legales aplicables.
+              </p>
+              <p>
+                <b>Destinatarios:</b> no se ceden datos a terceros salvo obligación legal.
+              </p>
+              <p>
+                <b>Derechos:</b> acceso, rectificación, supresión y demás derechos aplicables
+                escribiendo a <b>{PRIV.email}</b>.
+              </p>
+            </div>
+            <div style={s.modalCloseRow}>
+              <button style={btnStyle(false, 'primary')} onClick={() => setShowPriv(false)}>
+                Cerrar
+              </button>
+            </div>
           </div>
         </div>
       )}
