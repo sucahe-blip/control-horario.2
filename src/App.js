@@ -311,7 +311,7 @@ export default function App() {
       setEmpleadoNombre('');
       setNota('');
       setTab('FICHAR');
-      setMsg('');
+      setMsg(newSession ? 'OK ✅' : 'Sesión cerrada');
     });
 
     return () => sub.subscription.unsubscribe();
@@ -355,13 +355,10 @@ export default function App() {
 
       setEmpleados(data ?? []);
 
-      // Admin: por comodidad se pone por defecto su empleado (si no ha elegido otro)
       if (esAdmin && !empleadoSel && profile?.empleado_id) {
         setEmpleadoSel(profile.empleado_id);
       }
-
-      // Inspector: Opción B -> NO autoselecciona.
-      // (si quieres autoseleccionar el primero, me dices y lo cambiamos)
+      // Inspector: no autoselecciona
     };
 
     cargarEmpleados();
@@ -396,13 +393,11 @@ export default function App() {
 
   /* -------- Estado del día -------- */
   async function cargarEstadoDia() {
-    // Inspector: no necesitamos “estado del día” ni registros de hoy para fichar
     if (esInspector) return;
-
     if (!empleadoObjetivoId) return;
+
     const fecha = fechaLocalYYYYMMDD();
 
-    // Trabajo abierto (solo tipo Trabajo)
     const { data: tOpen } = await supabase
       .from('registros')
       .select('id, entrada, tipo')
@@ -416,7 +411,6 @@ export default function App() {
 
     setAbiertoTrabajo(tOpen ?? null);
 
-    // Pausa abierta
     const { data: pOpen } = await supabase
       .from('registros')
       .select('id, entrada, tipo')
@@ -430,7 +424,6 @@ export default function App() {
 
     setAbiertoPausa(pOpen ?? null);
 
-    // Lista de hoy
     const { data: lista } = await supabase
       .from('registros')
       .select('id, fecha, entrada, salida, tipo, nota, created_at')
@@ -462,7 +455,6 @@ export default function App() {
     if (modoLocal === 'RANGO') {
       desde = desdeR || fechaISO;
       hasta = hastaR || fechaISO;
-      // seguridad: si el usuario pone al revés, intercambiamos
       if (desde && hasta && desde > hasta) {
         const tmp = desde;
         desde = hasta;
@@ -494,28 +486,24 @@ export default function App() {
   }
 
   useEffect(() => {
-    // Si inspector y no ha elegido empleado aún, no cargamos nada
     if (esInspector && !empleadoObjetivoId) {
       setRegistrosPeriodo([]);
       return;
     }
-
     if (!empleadoObjetivoId) return;
 
     if (!esInspector) cargarEstadoDia();
-
     cargarPeriodo(modo, fechaSel, fechaDesde, fechaHasta);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [empleadoObjetivoId]);
 
   useEffect(() => {
-    // Inspector sin empleado: no cargamos
     if (esInspector && !empleadoObjetivoId) {
       setRegistrosPeriodo([]);
       return;
     }
-
     if (!empleadoObjetivoId) return;
+
     cargarPeriodo(modo, fechaSel, fechaDesde, fechaHasta);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modo, fechaSel, fechaDesde, fechaHasta, empleadoObjetivoId]);
@@ -627,7 +615,6 @@ export default function App() {
     }
   }
 
-  // Iniciar pausa: cierra Trabajo y abre Pausa (para cumplir “1 abierto”)
   async function iniciarPausa() {
     if (esInspector) return;
     if (!profile?.empleado_id) return;
@@ -649,7 +636,6 @@ export default function App() {
       const hora = horaLocalHHMM();
       const notaLimpia = nota.trim();
 
-      // cerrar trabajo
       const { error: e1 } = await supabase
         .from('registros')
         .update({ salida: hora })
@@ -660,7 +646,6 @@ export default function App() {
         return;
       }
 
-      // abrir pausa
       const { error: e2 } = await supabase.from('registros').insert({
         empleado_id: profile.empleado_id,
         fecha,
@@ -682,7 +667,6 @@ export default function App() {
     }
   }
 
-  // Reanudar: cierra Pausa y abre Trabajo
   async function terminarPausa() {
     if (esInspector) return;
     if (!profile?.empleado_id) return;
@@ -700,7 +684,6 @@ export default function App() {
       const hora = horaLocalHHMM();
       const notaLimpia = nota.trim();
 
-      // cerrar pausa
       const payload = { salida: hora };
       if (notaLimpia) payload.nota = notaLimpia;
 
@@ -714,7 +697,6 @@ export default function App() {
         return;
       }
 
-      // abrir trabajo
       const { error: e2 } = await supabase.from('registros').insert({
         empleado_id: profile.empleado_id,
         fecha,
@@ -774,7 +756,7 @@ export default function App() {
     shell: {
       maxWidth: 480,
       margin: '0 auto',
-      paddingBottom: 120,
+      paddingBottom: session ? 120 : 28,
     },
     header: {
       background: C.rojo,
@@ -782,14 +764,16 @@ export default function App() {
       borderRadius: 18,
       padding: 14,
       boxShadow: '0 10px 25px rgba(0,0,0,.08)',
+      overflow: 'hidden',
     },
     headerTop: {
       display: 'flex',
-      alignItems: 'center',
+      alignItems: 'flex-start',
       justifyContent: 'space-between',
       gap: 10,
+      flexWrap: 'wrap', // << clave para que no se pise en móvil
     },
-    brand: { display: 'flex', flexDirection: 'column', gap: 2 },
+    brand: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 180 },
     brandName: { fontWeight: 900, fontSize: 22, lineHeight: 1.1 },
     brandSub: { fontSize: 13, opacity: 0.9, fontWeight: 800 },
     datePill: {
@@ -801,17 +785,20 @@ export default function App() {
       fontWeight: 800,
       whiteSpace: 'nowrap',
       textAlign: 'center',
-      maxWidth: 210,
+      maxWidth: '100%',
       overflow: 'hidden',
       textOverflow: 'ellipsis',
+      flexShrink: 0,
     },
     clock: {
       marginTop: 10,
       display: 'flex',
       gap: 12,
-      alignItems: 'center',
+      alignItems: 'flex-end',
       justifyContent: 'space-between',
+      flexWrap: 'wrap',
     },
+    clockLeft: { minWidth: 200, flex: '1 1 auto' },
     clockBig: {
       fontSize: 34,
       fontWeight: 900,
@@ -827,6 +814,7 @@ export default function App() {
       fontWeight: 900,
       textAlign: 'right',
       minWidth: 160,
+      flex: '0 0 auto',
     },
     tabs: { marginTop: 12, display: 'flex', gap: 10 },
     tabBtn: (active) => ({
@@ -1024,39 +1012,46 @@ export default function App() {
           </div>
 
           <div style={s.clock}>
-            <div>
+            <div style={s.clockLeft}>
               <div style={{ fontSize: 12, opacity: 0.9, fontWeight: 800 }}>
                 Hora actual
               </div>
               <div style={s.clockBig}>{horaGrande}</div>
             </div>
-            <div style={s.statusPill}>
-              <div style={{ opacity: 0.9 }}>Estado</div>
-              <div style={{ marginTop: 4 }}>{estadoTexto}</div>
-            </div>
+
+            {/* SOLO CON SESIÓN: Estado */}
+            {session && (
+              <div style={s.statusPill}>
+                <div style={{ opacity: 0.9 }}>Estado</div>
+                <div style={{ marginTop: 4 }}>{estadoTexto}</div>
+              </div>
+            )}
           </div>
 
+          {/* SOLO CON SESIÓN: banner inspección */}
           {session && esInspector && (
             <div style={s.inspectorBanner}>🔎 MODO INSPECCIÓN — Solo lectura</div>
           )}
 
-          <div style={s.tabs}>
-            <button
-              style={s.tabBtn(tab === 'FICHAR')}
-              onClick={() => setTab('FICHAR')}
-              disabled={!session || esInspector}
-              title={esInspector ? 'Inspección: solo histórico' : ''}
-            >
-              Inicio
-            </button>
-            <button
-              style={s.tabBtn(tab === 'HISTORICO')}
-              onClick={() => setTab('HISTORICO')}
-              disabled={!session}
-            >
-              Histórico
-            </button>
-          </div>
+          {/* SOLO CON SESIÓN: tabs */}
+          {session && (
+            <div style={s.tabs}>
+              <button
+                style={s.tabBtn(tab === 'FICHAR')}
+                onClick={() => setTab('FICHAR')}
+                disabled={esInspector}
+                title={esInspector ? 'Inspección: solo histórico' : ''}
+              >
+                Inicio
+              </button>
+              <button
+                style={s.tabBtn(tab === 'HISTORICO')}
+                onClick={() => setTab('HISTORICO')}
+              >
+                Histórico
+              </button>
+            </div>
+          )}
         </div>
 
         {!session ? (
@@ -1408,7 +1403,7 @@ export default function App() {
             <button
               style={{
                 ...s.bottomPrimary,
-                ...(autoDisabled ? s.btnDisabled : null),
+                ...(!autoDisabled ? null : s.btnDisabled),
               }}
               disabled={autoDisabled}
               onClick={autoAction}
@@ -1419,7 +1414,7 @@ export default function App() {
             <button
               style={{
                 ...s.bottomSecondary,
-                ...(finDisabled ? s.btnDisabled : null),
+                ...(!finDisabled ? null : s.btnDisabled),
               }}
               disabled={finDisabled}
               onClick={salidaTrabajo}
