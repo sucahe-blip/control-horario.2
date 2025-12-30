@@ -9,14 +9,6 @@ import * as XLSX from 'xlsx';
 const EMPRESA_NOMBRE_EXCEL = 'CAÑIZARES, S.A.';
 const EMPRESA_NOMBRE_UI = 'Cañizares S.A.';
 
-/* Datos legales (Opción 1) */
-const PRIV = {
-  empresa: 'Cañizares, Instalaciones y Proyectos, S.A.',
-  cif: 'A78593316',
-  direccion: 'Calle Islas Cíes 35, 28035 Madrid',
-  email: 'canizares@jcanizares.com',
-};
-
 /* =========================
    FACTORES / TIEMPOS
    ========================= */
@@ -221,7 +213,7 @@ export default function App() {
   const [registrosPeriodo, setRegistrosPeriodo] = useState([]);
   const [loadingPeriodo, setLoadingPeriodo] = useState(false);
 
-  // ADMIN
+  // EMPLEADOS (admin o inspector)
   const [empleados, setEmpleados] = useState([]);
   const [empleadoSel, setEmpleadoSel] = useState('');
 
@@ -234,9 +226,6 @@ export default function App() {
   // Tabs
   const [tab, setTab] = useState('FICHAR'); // FICHAR | HISTORICO
 
-  // Modales sencillos
-  const [showPriv, setShowPriv] = useState(false);
-
   // Reloj
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -244,9 +233,15 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  const empleadoObjetivoId = profile?.es_admin
-    ? empleadoSel || profile?.empleado_id
-    : profile?.empleado_id;
+  const esAdmin = !!profile?.es_admin;
+  const esInspector = !!profile?.es_inspector;
+
+  // Si inspector: el empleado objetivo siempre es el seleccionado
+  const empleadoObjetivoId = esAdmin
+    ? (empleadoSel || profile?.empleado_id)
+    : esInspector
+    ? (empleadoSel || '')
+    : (profile?.empleado_id);
 
   const estoyViendoMiEmpleado =
     !!profile?.empleado_id && empleadoObjetivoId === profile.empleado_id;
@@ -267,7 +262,9 @@ export default function App() {
   }, [now]);
 
   const horaGrande = useMemo(() => {
-    return `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
+    return `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(
+      now.getSeconds()
+    )}`;
   }, [now]);
 
   /* -------- Auth -------- */
@@ -302,25 +299,33 @@ export default function App() {
       if (!session?.user?.id) return;
 
       setMsg('Cargando perfil...');
+
+      // OJO: aquí incluimos es_inspector
       const { data, error } = await supabase
         .from('usuarios')
-        .select('user_id, empleado_id, es_admin')
+        .select('user_id, empleado_id, es_admin, es_inspector')
         .eq('user_id', session.user.id)
         .maybeSingle();
 
-      if (error) setMsg('ERROR: ' + error.message);
-      else {
-        setProfile(data);
-        setMsg('OK ✅');
+      if (error) {
+        setMsg('ERROR perfil: ' + error.message);
+        setProfile(null);
+        return;
       }
+
+      setProfile(data);
+      setMsg('OK ✅');
+
+      // Si es inspector, lo llevamos directo al histórico
+      if (data?.es_inspector) setTab('HISTORICO');
     };
     run();
   }, [session]);
 
-  /* -------- Admin: empleados -------- */
+  /* -------- Admin/Inspector: empleados -------- */
   useEffect(() => {
     const cargarEmpleados = async () => {
-      if (!profile?.es_admin) return;
+      if (!esAdmin && !esInspector) return;
 
       const { data, error } = await supabase
         .from('empleados')
@@ -332,19 +337,28 @@ export default function App() {
         return;
       }
 
-      setEmpleados(data ?? []);
-      if (!empleadoSel && profile?.empleado_id) setEmpleadoSel(profile.empleado_id);
+      const list = data ?? [];
+      setEmpleados(list);
+
+      // Inspector: auto-selecciona el primero si no hay uno elegido
+      if (!empleadoSel) {
+        if (esAdmin && profile?.empleado_id) {
+          setEmpleadoSel(profile.empleado_id);
+        } else if (esInspector && list.length > 0) {
+          setEmpleadoSel(list[0].id);
+        }
+      }
     };
 
     cargarEmpleados();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.es_admin, profile?.empleado_id]);
+  }, [esAdmin, esInspector, profile?.empleado_id]);
 
   /* -------- Nombre empleado (UI y Excel) -------- */
   useEffect(() => {
     const cargarNombre = async () => {
       if (!empleadoObjetivoId) {
-        setEmpleadoNombre('');
+        setEmpleadoNombre(esInspector ? '(Selecciona empleado)' : '');
         return;
       }
 
@@ -364,7 +378,7 @@ export default function App() {
     };
 
     cargarNombre();
-  }, [empleadoObjetivoId, empleados]);
+  }, [empleadoObjetivoId, empleados, esInspector]);
 
   /* -------- Estado del día -------- */
   async function cargarEstadoDia() {
@@ -484,23 +498,6 @@ export default function App() {
     setEmpleadoSel('');
     setEmpleadoNombre('');
     setMsg('Sesión cerrada');
-  };
-
-  /* -------- Recuperar contraseña -------- */
-  const recuperarPassword = async () => {
-    const mail = (email || '').trim();
-    if (!mail) {
-      setMsg('Escribe tu email arriba y pulsa “¿Has olvidado la contraseña?”');
-      return;
-    }
-
-    setMsg('Enviando email de recuperación...');
-    const { error } = await supabase.auth.resetPasswordForEmail(mail, {
-      redirectTo: window.location.origin,
-    });
-
-    if (error) setMsg('ERROR: ' + error.message);
-    else setMsg('✅ Te hemos enviado un email para restablecer la contraseña.');
   };
 
   /* =========================
@@ -741,13 +738,10 @@ export default function App() {
       alignItems: 'center',
       justifyContent: 'space-between',
       gap: 10,
-      minWidth: 0,
-      flexWrap: 'wrap',
     },
-    brand: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 },
+    brand: { display: 'flex', flexDirection: 'column', gap: 2 },
     brandName: { fontWeight: 900, fontSize: 22, lineHeight: 1.1 },
     brandSub: { fontSize: 13, opacity: 0.9, fontWeight: 800 },
-
     datePill: {
       background: 'rgba(255,255,255,.16)',
       border: '1px solid rgba(255,255,255,.25)',
@@ -756,29 +750,24 @@ export default function App() {
       fontSize: 12,
       fontWeight: 800,
       whiteSpace: 'nowrap',
-      maxWidth: '100%',
+      textAlign: 'center',
+      maxWidth: 200,
       overflow: 'hidden',
       textOverflow: 'ellipsis',
     },
-
-    /* ✅ FIX MÓVIL: que no se descuadre */
     clock: {
       marginTop: 10,
       display: 'flex',
       gap: 12,
       alignItems: 'center',
       justifyContent: 'space-between',
-      minWidth: 0,
-      flexWrap: 'wrap',
     },
-
     clockBig: {
       fontSize: 34,
       fontWeight: 900,
       letterSpacing: 0.5,
       lineHeight: 1,
     },
-
     statusPill: {
       background: 'rgba(255,255,255,.16)',
       border: '1px solid rgba(255,255,255,.25)',
@@ -787,12 +776,8 @@ export default function App() {
       fontSize: 12,
       fontWeight: 900,
       textAlign: 'right',
-      minWidth: 0,
-      flex: '1 1 160px',
-      maxWidth: '100%',
-      overflow: 'hidden',
+      minWidth: 160,
     },
-
     tabs: { marginTop: 12, display: 'flex', gap: 10 },
     tabBtn: (active) => ({
       flex: 1,
@@ -835,18 +820,6 @@ export default function App() {
     list: { margin: 0, paddingLeft: 18 },
     li: { margin: '8px 0', lineHeight: 1.25 },
     msg: { marginTop: 10, fontWeight: 900, color: C.negro },
-
-    linkBtn: {
-      background: 'transparent',
-      border: 0,
-      padding: 0,
-      marginTop: 6,
-      color: C.rojo,
-      fontWeight: 900,
-      textAlign: 'left',
-      cursor: 'pointer',
-      fontSize: 14,
-    },
 
     btn: (variant = 'primary') => {
       const isPrimary = variant === 'primary';
@@ -929,29 +902,16 @@ export default function App() {
       fontWeight: 900,
     },
 
-    /* Modal simple */
-    modalOverlay: {
-      position: 'fixed',
-      inset: 0,
-      background: 'rgba(0,0,0,.45)',
-      display: 'flex',
-      alignItems: 'flex-end',
-      justifyContent: 'center',
-      padding: 14,
-      zIndex: 9999,
+    inspectorBanner: {
+      marginTop: 10,
+      padding: '10px 12px',
+      borderRadius: 14,
+      background: '#fff7ed',
+      border: '1px solid #fed7aa',
+      color: '#9a3412',
+      fontWeight: 900,
+      fontSize: 13,
     },
-    modal: {
-      width: '100%',
-      maxWidth: 520,
-      background: C.blanco,
-      borderRadius: 18,
-      border: `1px solid ${C.borde}`,
-      padding: 14,
-      boxShadow: '0 20px 50px rgba(0,0,0,.25)',
-    },
-    modalTitle: { fontWeight: 900, fontSize: 16, marginBottom: 8 },
-    modalText: { fontSize: 13, color: C.negro, lineHeight: 1.35 },
-    modalCloseRow: { display: 'flex', justifyContent: 'flex-end', marginTop: 12 },
   };
 
   const btnStyle = (disabled, variant) => ({
@@ -970,7 +930,8 @@ export default function App() {
       ? 'Reanudar'
       : 'Iniciar pausa';
 
-  const autoDisabled = !estoyViendoMiEmpleado || busy || loadingPeriodo;
+  // Inspector: siempre deshabilitado
+  const autoDisabled = esInspector || !estoyViendoMiEmpleado || busy || loadingPeriodo;
 
   const autoAction = async () => {
     if (!abiertoTrabajo && !abiertoPausa) return entradaTrabajo();
@@ -979,6 +940,7 @@ export default function App() {
   };
 
   const finDisabled =
+    esInspector ||
     !estoyViendoMiEmpleado ||
     busy ||
     loadingPeriodo ||
@@ -1002,14 +964,12 @@ export default function App() {
           </div>
 
           <div style={s.clock}>
-            {/* ✅ FIX: permitir encoger en móvil */}
-            <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+            <div>
               <div style={{ fontSize: 12, opacity: 0.9, fontWeight: 800 }}>
                 Hora actual
               </div>
               <div style={s.clockBig}>{horaGrande}</div>
             </div>
-
             <div style={s.statusPill}>
               <div style={{ opacity: 0.9 }}>Estado</div>
               <div style={{ marginTop: 4 }}>{estadoTexto}</div>
@@ -1020,7 +980,8 @@ export default function App() {
             <button
               style={s.tabBtn(tab === 'FICHAR')}
               onClick={() => setTab('FICHAR')}
-              disabled={!session}
+              disabled={!session || esInspector}
+              title={esInspector ? 'Modo inspección: solo lectura' : ''}
             >
               Inicio
             </button>
@@ -1051,24 +1012,21 @@ export default function App() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
-
               <button style={btnStyle(false, 'primary')} onClick={login}>
                 Entrar
               </button>
-
-              <button style={s.linkBtn} onClick={recuperarPassword}>
-                ¿Has olvidado la contraseña?
-              </button>
-
-              <button style={s.linkBtn} onClick={() => setShowPriv(true)}>
-                Aviso de privacidad
-              </button>
-
               <div style={s.small}>{msg}</div>
             </div>
           </div>
         ) : (
           <div style={s.card}>
+            {/* Aviso inspector */}
+            {esInspector && (
+              <div style={s.inspectorBanner}>
+                🔎 MODO INSPECCIÓN — Solo lectura (no permite fichar)
+              </div>
+            )}
+
             {/* Nombre del empleado */}
             <div
               style={{
@@ -1076,6 +1034,7 @@ export default function App() {
                 justifyContent: 'space-between',
                 gap: 10,
                 alignItems: 'center',
+                marginTop: esInspector ? 10 : 0,
               }}
             >
               <div style={s.employeePill}>
@@ -1096,7 +1055,7 @@ export default function App() {
 
             <div style={s.hr} />
 
-            {profile?.es_admin && (
+            {(esAdmin || esInspector) && (
               <>
                 <div style={{ ...s.row, justifyContent: 'space-between' }}>
                   <div style={s.row}>
@@ -1125,7 +1084,7 @@ export default function App() {
                     </button>
                   </div>
 
-                  {!estoyViendoMiEmpleado && (
+                  {esAdmin && !estoyViendoMiEmpleado && (
                     <div style={{ ...s.small, fontWeight: 900 }}>
                       (Viendo otro empleado)
                     </div>
@@ -1145,7 +1104,7 @@ export default function App() {
                     placeholder="(Opcional) Se guardará en el próximo fichaje"
                     value={nota}
                     onChange={(e) => setNota(e.target.value)}
-                    disabled={!estoyViendoMiEmpleado || busy || loadingPeriodo}
+                    disabled={esInspector || !estoyViendoMiEmpleado || busy || loadingPeriodo}
                   />
                   <div style={{ ...s.small, marginTop: 6 }}>
                     Ej.: motivo de ausencia, detalle del día, etc.
@@ -1237,7 +1196,8 @@ export default function App() {
                         totalPeriodoHHMM,
                       })
                     }
-                    disabled={loadingPeriodo}
+                    disabled={loadingPeriodo || !empleadoObjetivoId}
+                    title={!empleadoObjetivoId ? 'Selecciona empleado' : ''}
                   >
                     Exportar Excel
                   </button>
@@ -1269,9 +1229,9 @@ export default function App() {
                     <ul style={s.list}>
                       {registrosPeriodo.map((r) => (
                         <li key={r.id} style={s.li}>
-                          <b>{formatearFechaDDMMYYYY(r.fecha)}</b> — <b>{r.tipo}</b>{' '}
-                          — Entrada: <b>{r.entrada ?? '-'}</b> — Salida:{' '}
-                          <b>{r.salida ?? '-'}</b>
+                          <b>{formatearFechaDDMMYYYY(r.fecha)}</b> —{' '}
+                          <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b> —
+                          Salida: <b>{r.salida ?? '-'}</b>
                           {r.nota ? ` — Nota: ${r.nota}` : ''}
                         </li>
                       ))}
@@ -1293,8 +1253,8 @@ export default function App() {
                         <ul style={{ ...s.list, marginTop: 6 }}>
                           {g.items.map((r) => (
                             <li key={r.id} style={s.li}>
-                              {r.tipo} — Entrada: <b>{r.entrada ?? '-'}</b> — Salida:{' '}
-                              <b>{r.salida ?? '-'}</b>
+                              {r.tipo} — Entrada: <b>{r.entrada ?? '-'}</b> —
+                              Salida: <b>{r.salida ?? '-'}</b>
                               {r.nota ? ` — Nota: ${r.nota}` : ''}
                             </li>
                           ))}
@@ -1309,8 +1269,8 @@ export default function App() {
         )}
       </div>
 
-      {/* Barra inferior sticky con botones grandes */}
-      {session && tab === 'FICHAR' && (
+      {/* Barra inferior sticky con botones grandes (NO inspector) */}
+      {session && tab === 'FICHAR' && !esInspector && (
         <div style={s.bottomBar}>
           <div style={s.bottomInner}>
             <button
@@ -1334,42 +1294,6 @@ export default function App() {
             >
               Finalizar jornada
             </button>
-          </div>
-        </div>
-      )}
-
-      {/* Modal Aviso de Privacidad */}
-      {showPriv && (
-        <div style={s.modalOverlay} onClick={() => setShowPriv(false)}>
-          <div style={s.modal} onClick={(e) => e.stopPropagation()}>
-            <div style={s.modalTitle}>Aviso de privacidad</div>
-            <div style={s.modalText}>
-              <p style={{ marginTop: 0 }}>
-                <b>Responsable:</b> {PRIV.empresa} (CIF {PRIV.cif}), {PRIV.direccion}.
-              </p>
-              <p>
-                <b>Finalidad:</b> registrar la jornada (entradas/salidas/pausas) y permitir
-                la consulta y exportación del histórico.
-              </p>
-              <p>
-                <b>Base legal:</b> cumplimiento de obligaciones laborales y gestión interna.
-              </p>
-              <p>
-                <b>Conservación:</b> durante los plazos legales aplicables.
-              </p>
-              <p>
-                <b>Destinatarios:</b> no se ceden datos a terceros salvo obligación legal.
-              </p>
-              <p>
-                <b>Derechos:</b> acceso, rectificación, supresión y demás derechos aplicables
-                escribiendo a <b>{PRIV.email}</b>.
-              </p>
-            </div>
-            <div style={s.modalCloseRow}>
-              <button style={btnStyle(false, 'primary')} onClick={() => setShowPriv(false)}>
-                Cerrar
-              </button>
-            </div>
           </div>
         </div>
       )}
