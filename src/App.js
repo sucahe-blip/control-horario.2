@@ -134,11 +134,23 @@ function buildAOAForExcel({
   empleadoNombre,
   modo,
   fechaSel,
+  fechaDesde,
+  fechaHasta,
   registrosPeriodo,
   totalPeriodoHHMM,
 }) {
-  const periodoTxt = modo === 'DIA' ? 'Día' : modo === 'SEMANA' ? 'Semana' : 'Mes';
-  const refTxt = formatearFechaDDMMYYYY(fechaSel);
+  const periodoTxt =
+    modo === 'DIA'
+      ? 'Día'
+      : modo === 'SEMANA'
+      ? 'Semana'
+      : modo === 'MES'
+      ? 'Mes'
+      : 'Rango';
+  const refTxt =
+    modo === 'RANGO'
+      ? `${formatearFechaDDMMYYYY(fechaDesde)} → ${formatearFechaDDMMYYYY(fechaHasta)}`
+      : formatearFechaDDMMYYYY(fechaSel);
   const fechaListado = fechaHoraExportacion();
 
   const tableRows = (registrosPeriodo ?? []).map((r) => [
@@ -168,6 +180,8 @@ function exportarXLSX({
   empleadoNombre,
   modo,
   fechaSel,
+  fechaDesde,
+  fechaHasta,
   registrosPeriodo,
   totalPeriodoHHMM,
 }) {
@@ -176,6 +190,8 @@ function exportarXLSX({
     empleadoNombre,
     modo,
     fechaSel,
+    fechaDesde,
+    fechaHasta,
     registrosPeriodo,
     totalPeriodoHHMM,
   });
@@ -185,7 +201,12 @@ function exportarXLSX({
   XLSX.utils.book_append_sheet(wb, ws, 'Historico');
 
   const nombreEmpleado = safeFilePart(empleadoNombre || 'Empleado');
-  const nombre = `historico_${modo.toLowerCase()}_${fechaSel}_${nombreEmpleado}.xlsx`;
+  const ref =
+    modo === 'RANGO'
+      ? `${fechaDesde}_a_${fechaHasta}`
+      : fechaSel;
+
+  const nombre = `historico_${modo.toLowerCase()}_${ref}_${nombreEmpleado}.xlsx`;
   XLSX.writeFile(wb, nombre);
 }
 
@@ -208,12 +229,14 @@ export default function App() {
   const [hoy, setHoy] = useState([]);
 
   // HISTÓRICO
-  const [modo, setModo] = useState('DIA');
+  const [modo, setModo] = useState('DIA'); // DIA | SEMANA | MES | RANGO
   const [fechaSel, setFechaSel] = useState(fechaLocalYYYYMMDD());
+  const [fechaDesde, setFechaDesde] = useState(fechaLocalYYYYMMDD());
+  const [fechaHasta, setFechaHasta] = useState(fechaLocalYYYYMMDD());
   const [registrosPeriodo, setRegistrosPeriodo] = useState([]);
   const [loadingPeriodo, setLoadingPeriodo] = useState(false);
 
-  // EMPLEADOS (admin o inspector)
+  // ADMIN / INSPECTOR
   const [empleados, setEmpleados] = useState([]);
   const [empleadoSel, setEmpleadoSel] = useState('');
 
@@ -233,15 +256,14 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
+  const esInspector = !!(profile?.es_inspector || profile?.rol === 'inspector');
   const esAdmin = !!profile?.es_admin;
-  const esInspector = !!profile?.es_inspector;
 
-  // Si inspector: el empleado objetivo siempre es el seleccionado
-  const empleadoObjetivoId = esAdmin
+  const empleadoObjetivoId = esInspector
+    ? (empleadoSel || null) // Opción B: inspector DEBE elegir
+    : esAdmin
     ? (empleadoSel || profile?.empleado_id)
-    : esInspector
-    ? (empleadoSel || '')
-    : (profile?.empleado_id);
+    : profile?.empleado_id;
 
   const estoyViendoMiEmpleado =
     !!profile?.empleado_id && empleadoObjetivoId === profile.empleado_id;
@@ -281,6 +303,8 @@ export default function App() {
       setHoy([]);
       setModo('DIA');
       setFechaSel(fechaLocalYYYYMMDD());
+      setFechaDesde(fechaLocalYYYYMMDD());
+      setFechaHasta(fechaLocalYYYYMMDD());
       setRegistrosPeriodo([]);
       setEmpleados([]);
       setEmpleadoSel('');
@@ -299,25 +323,17 @@ export default function App() {
       if (!session?.user?.id) return;
 
       setMsg('Cargando perfil...');
-
-      // OJO: aquí incluimos es_inspector
       const { data, error } = await supabase
         .from('usuarios')
-        .select('user_id, empleado_id, es_admin, es_inspector')
+        .select('user_id, empleado_id, es_admin, es_inspector, rol')
         .eq('user_id', session.user.id)
         .maybeSingle();
 
-      if (error) {
-        setMsg('ERROR perfil: ' + error.message);
-        setProfile(null);
-        return;
+      if (error) setMsg('ERROR: ' + error.message);
+      else {
+        setProfile(data);
+        setMsg('OK ✅');
       }
-
-      setProfile(data);
-      setMsg('OK ✅');
-
-      // Si es inspector, lo llevamos directo al histórico
-      if (data?.es_inspector) setTab('HISTORICO');
     };
     run();
   }, [session]);
@@ -337,17 +353,15 @@ export default function App() {
         return;
       }
 
-      const list = data ?? [];
-      setEmpleados(list);
+      setEmpleados(data ?? []);
 
-      // Inspector: auto-selecciona el primero si no hay uno elegido
-      if (!empleadoSel) {
-        if (esAdmin && profile?.empleado_id) {
-          setEmpleadoSel(profile.empleado_id);
-        } else if (esInspector && list.length > 0) {
-          setEmpleadoSel(list[0].id);
-        }
+      // Admin: por comodidad se pone por defecto su empleado (si no ha elegido otro)
+      if (esAdmin && !empleadoSel && profile?.empleado_id) {
+        setEmpleadoSel(profile.empleado_id);
       }
+
+      // Inspector: Opción B -> NO autoselecciona.
+      // (si quieres autoseleccionar el primero, me dices y lo cambiamos)
     };
 
     cargarEmpleados();
@@ -358,7 +372,7 @@ export default function App() {
   useEffect(() => {
     const cargarNombre = async () => {
       if (!empleadoObjetivoId) {
-        setEmpleadoNombre(esInspector ? '(Selecciona empleado)' : '');
+        setEmpleadoNombre('');
         return;
       }
 
@@ -378,10 +392,13 @@ export default function App() {
     };
 
     cargarNombre();
-  }, [empleadoObjetivoId, empleados, esInspector]);
+  }, [empleadoObjetivoId, empleados]);
 
   /* -------- Estado del día -------- */
   async function cargarEstadoDia() {
+    // Inspector: no necesitamos “estado del día” ni registros de hoy para fichar
+    if (esInspector) return;
+
     if (!empleadoObjetivoId) return;
     const fecha = fechaLocalYYYYMMDD();
 
@@ -425,8 +442,11 @@ export default function App() {
   }
 
   /* -------- Histórico -------- */
-  async function cargarPeriodo(modoLocal, fechaISO) {
-    if (!empleadoObjetivoId) return;
+  async function cargarPeriodo(modoLocal, fechaISO, desdeR, hastaR) {
+    if (!empleadoObjetivoId) {
+      setRegistrosPeriodo([]);
+      return;
+    }
 
     let desde = fechaISO;
     let hasta = fechaISO;
@@ -438,6 +458,16 @@ export default function App() {
     if (modoLocal === 'MES') {
       desde = startOfMonthISO(fechaISO);
       hasta = endOfMonthISO(fechaISO);
+    }
+    if (modoLocal === 'RANGO') {
+      desde = desdeR || fechaISO;
+      hasta = hastaR || fechaISO;
+      // seguridad: si el usuario pone al revés, intercambiamos
+      if (desde && hasta && desde > hasta) {
+        const tmp = desde;
+        desde = hasta;
+        hasta = tmp;
+      }
     }
 
     setLoadingPeriodo(true);
@@ -464,17 +494,31 @@ export default function App() {
   }
 
   useEffect(() => {
+    // Si inspector y no ha elegido empleado aún, no cargamos nada
+    if (esInspector && !empleadoObjetivoId) {
+      setRegistrosPeriodo([]);
+      return;
+    }
+
     if (!empleadoObjetivoId) return;
-    cargarEstadoDia();
-    cargarPeriodo(modo, fechaSel);
+
+    if (!esInspector) cargarEstadoDia();
+
+    cargarPeriodo(modo, fechaSel, fechaDesde, fechaHasta);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [empleadoObjetivoId]);
 
   useEffect(() => {
+    // Inspector sin empleado: no cargamos
+    if (esInspector && !empleadoObjetivoId) {
+      setRegistrosPeriodo([]);
+      return;
+    }
+
     if (!empleadoObjetivoId) return;
-    cargarPeriodo(modo, fechaSel);
+    cargarPeriodo(modo, fechaSel, fechaDesde, fechaHasta);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modo, fechaSel, empleadoObjetivoId]);
+  }, [modo, fechaSel, fechaDesde, fechaHasta, empleadoObjetivoId]);
 
   /* -------- Login / Logout -------- */
   const login = async () => {
@@ -505,6 +549,7 @@ export default function App() {
      ========================= */
 
   async function entradaTrabajo() {
+    if (esInspector) return;
     if (!profile?.empleado_id) return;
     if (!estoyViendoMiEmpleado) return;
     if (busy) return;
@@ -535,13 +580,14 @@ export default function App() {
       }
 
       await cargarEstadoDia();
-      await cargarPeriodo(modo, fechaSel);
+      await cargarPeriodo(modo, fechaSel, fechaDesde, fechaHasta);
     } finally {
       setBusy(false);
     }
   }
 
   async function salidaTrabajo() {
+    if (esInspector) return;
     if (!profile?.empleado_id) return;
     if (!estoyViendoMiEmpleado) return;
     if (busy) return;
@@ -575,7 +621,7 @@ export default function App() {
       }
 
       await cargarEstadoDia();
-      await cargarPeriodo(modo, fechaSel);
+      await cargarPeriodo(modo, fechaSel, fechaDesde, fechaHasta);
     } finally {
       setBusy(false);
     }
@@ -583,6 +629,7 @@ export default function App() {
 
   // Iniciar pausa: cierra Trabajo y abre Pausa (para cumplir “1 abierto”)
   async function iniciarPausa() {
+    if (esInspector) return;
     if (!profile?.empleado_id) return;
     if (!estoyViendoMiEmpleado) return;
     if (busy) return;
@@ -629,7 +676,7 @@ export default function App() {
       }
 
       await cargarEstadoDia();
-      await cargarPeriodo(modo, fechaSel);
+      await cargarPeriodo(modo, fechaSel, fechaDesde, fechaHasta);
     } finally {
       setBusy(false);
     }
@@ -637,6 +684,7 @@ export default function App() {
 
   // Reanudar: cierra Pausa y abre Trabajo
   async function terminarPausa() {
+    if (esInspector) return;
     if (!profile?.empleado_id) return;
     if (!estoyViendoMiEmpleado) return;
     if (busy) return;
@@ -682,7 +730,7 @@ export default function App() {
       }
 
       await cargarEstadoDia();
-      await cargarPeriodo(modo, fechaSel);
+      await cargarPeriodo(modo, fechaSel, fechaDesde, fechaHasta);
     } finally {
       setBusy(false);
     }
@@ -693,7 +741,9 @@ export default function App() {
   const totalPeriodoHHMM = minutesToHHMM(totalMinutos(registrosPeriodo));
   const gruposPeriodo = agruparPorFecha(registrosPeriodo);
 
-  const estadoTexto = abiertoPausa
+  const estadoTexto = esInspector
+    ? '🔎 Inspección (solo lectura)'
+    : abiertoPausa
     ? `⏸️ Pausa (desde ${abiertoPausa.entrada})`
     : abiertoTrabajo
     ? `🟢 Trabajo (desde ${abiertoTrabajo.entrada})`
@@ -751,7 +801,7 @@ export default function App() {
       fontWeight: 800,
       whiteSpace: 'nowrap',
       textAlign: 'center',
-      maxWidth: 200,
+      maxWidth: 210,
       overflow: 'hidden',
       textOverflow: 'ellipsis',
     },
@@ -788,6 +838,7 @@ export default function App() {
       color: active ? C.rojo : C.negro,
       fontWeight: 900,
       cursor: 'pointer',
+      opacity: !session ? 0.6 : 1,
     }),
     card: {
       marginTop: 12,
@@ -900,17 +951,21 @@ export default function App() {
       border: `1px solid ${C.borde}`,
       background: C.blanco,
       fontWeight: 900,
+      maxWidth: 260,
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
     },
 
     inspectorBanner: {
       marginTop: 10,
-      padding: '10px 12px',
+      background: 'rgba(255,255,255,.14)',
+      border: '1px dashed rgba(255,255,255,.35)',
       borderRadius: 14,
-      background: '#fff7ed',
-      border: '1px solid #fed7aa',
-      color: '#9a3412',
+      padding: '8px 10px',
+      fontSize: 12,
       fontWeight: 900,
-      fontSize: 13,
+      textAlign: 'center',
     },
   };
 
@@ -930,8 +985,7 @@ export default function App() {
       ? 'Reanudar'
       : 'Iniciar pausa';
 
-  // Inspector: siempre deshabilitado
-  const autoDisabled = esInspector || !estoyViendoMiEmpleado || busy || loadingPeriodo;
+  const autoDisabled = !estoyViendoMiEmpleado || busy || loadingPeriodo || esInspector;
 
   const autoAction = async () => {
     if (!abiertoTrabajo && !abiertoPausa) return entradaTrabajo();
@@ -940,16 +994,22 @@ export default function App() {
   };
 
   const finDisabled =
-    esInspector ||
     !estoyViendoMiEmpleado ||
     busy ||
     loadingPeriodo ||
     !abiertoTrabajo ||
-    !!abiertoPausa;
+    !!abiertoPausa ||
+    esInspector;
 
   /* =========================
      RENDER
      ========================= */
+
+  // Si inspector, forzamos tab HISTORICO
+  useEffect(() => {
+    if (session && esInspector && tab !== 'HISTORICO') setTab('HISTORICO');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, esInspector]);
 
   return (
     <div style={s.page}>
@@ -976,12 +1036,16 @@ export default function App() {
             </div>
           </div>
 
+          {session && esInspector && (
+            <div style={s.inspectorBanner}>🔎 MODO INSPECCIÓN — Solo lectura</div>
+          )}
+
           <div style={s.tabs}>
             <button
               style={s.tabBtn(tab === 'FICHAR')}
               onClick={() => setTab('FICHAR')}
               disabled={!session || esInspector}
-              title={esInspector ? 'Modo inspección: solo lectura' : ''}
+              title={esInspector ? 'Inspección: solo histórico' : ''}
             >
               Inicio
             </button>
@@ -1020,13 +1084,6 @@ export default function App() {
           </div>
         ) : (
           <div style={s.card}>
-            {/* Aviso inspector */}
-            {esInspector && (
-              <div style={s.inspectorBanner}>
-                🔎 MODO INSPECCIÓN — Solo lectura (no permite fichar)
-              </div>
-            )}
-
             {/* Nombre del empleado */}
             <div
               style={{
@@ -1034,7 +1091,6 @@ export default function App() {
                 justifyContent: 'space-between',
                 gap: 10,
                 alignItems: 'center',
-                marginTop: esInspector ? 10 : 0,
               }}
             >
               <div style={s.employeePill}>
@@ -1066,6 +1122,9 @@ export default function App() {
                       onChange={(e) => setEmpleadoSel(e.target.value)}
                       disabled={busy || loadingPeriodo}
                     >
+                      {esInspector && (
+                        <option value="">(Selecciona empleado)</option>
+                      )}
                       {empleados.map((em) => (
                         <option key={em.id} value={em.id}>
                           {em.nombre}
@@ -1075,8 +1134,12 @@ export default function App() {
                     <button
                       style={btnStyle(busy || loadingPeriodo, 'ghost')}
                       onClick={async () => {
-                        await cargarEstadoDia();
-                        await cargarPeriodo(modo, fechaSel);
+                        if (esInspector && !empleadoSel) {
+                          setMsg('⚠️ Selecciona un empleado');
+                          return;
+                        }
+                        if (!esInspector) await cargarEstadoDia();
+                        await cargarPeriodo(modo, fechaSel, fechaDesde, fechaHasta);
                       }}
                       disabled={busy || loadingPeriodo}
                     >
@@ -1084,7 +1147,7 @@ export default function App() {
                     </button>
                   </div>
 
-                  {esAdmin && !estoyViendoMiEmpleado && (
+                  {!esInspector && !estoyViendoMiEmpleado && (
                     <div style={{ ...s.small, fontWeight: 900 }}>
                       (Viendo otro empleado)
                     </div>
@@ -1095,7 +1158,7 @@ export default function App() {
               </>
             )}
 
-            {tab === 'FICHAR' ? (
+            {tab === 'FICHAR' && !esInspector ? (
               <div style={{ display: 'grid', gap: 12 }}>
                 <div>
                   <div style={s.label}>Nota</div>
@@ -1104,7 +1167,7 @@ export default function App() {
                     placeholder="(Opcional) Se guardará en el próximo fichaje"
                     value={nota}
                     onChange={(e) => setNota(e.target.value)}
-                    disabled={esInspector || !estoyViendoMiEmpleado || busy || loadingPeriodo}
+                    disabled={!estoyViendoMiEmpleado || busy || loadingPeriodo}
                   />
                   <div style={{ ...s.small, marginTop: 6 }}>
                     Ej.: motivo de ausencia, detalle del día, etc.
@@ -1142,125 +1205,194 @@ export default function App() {
               </div>
             ) : (
               <div style={{ display: 'grid', gap: 10 }}>
-                <div style={s.row}>
-                  <div style={s.label}>Periodo</div>
-                  <button
-                    style={btnStyle(modo === 'DIA' || loadingPeriodo, 'ghost')}
-                    onClick={() => setModo('DIA')}
-                    disabled={modo === 'DIA' || loadingPeriodo}
-                  >
-                    Día
-                  </button>
-                  <button
-                    style={btnStyle(modo === 'SEMANA' || loadingPeriodo, 'ghost')}
-                    onClick={() => setModo('SEMANA')}
-                    disabled={modo === 'SEMANA' || loadingPeriodo}
-                  >
-                    Semana
-                  </button>
-                  <button
-                    style={btnStyle(modo === 'MES' || loadingPeriodo, 'ghost')}
-                    onClick={() => setModo('MES')}
-                    disabled={modo === 'MES' || loadingPeriodo}
-                  >
-                    Mes
-                  </button>
-                </div>
-
-                <div style={s.row}>
-                  <div style={s.label}>Fecha</div>
-                  <input
-                    type="date"
-                    value={fechaSel}
-                    onChange={(e) => setFechaSel(e.target.value)}
-                    disabled={loadingPeriodo}
-                    style={{ ...s.input, maxWidth: 220 }}
-                  />
-                  <button
-                    style={btnStyle(loadingPeriodo, 'ghost')}
-                    onClick={() => setFechaSel(fechaLocalYYYYMMDD())}
-                    disabled={loadingPeriodo}
-                  >
-                    Hoy
-                  </button>
-
-                  <button
-                    style={btnStyle(loadingPeriodo, 'primary')}
-                    onClick={() =>
-                      exportarXLSX({
-                        empresaNombre: EMPRESA_NOMBRE_EXCEL,
-                        empleadoNombre: empleadoNombre,
-                        modo,
-                        fechaSel,
-                        registrosPeriodo,
-                        totalPeriodoHHMM,
-                      })
-                    }
-                    disabled={loadingPeriodo || !empleadoObjetivoId}
-                    title={!empleadoObjetivoId ? 'Selecciona empleado' : ''}
-                  >
-                    Exportar Excel
-                  </button>
-                </div>
-
-                <div style={s.small}>
-                  <b>
-                    Total{' '}
-                    {modo === 'DIA'
-                      ? 'del día'
-                      : modo === 'SEMANA'
-                      ? 'semanal'
-                      : 'mensual'}{' '}
-                    (neto):
-                  </b>{' '}
-                  {loadingPeriodo ? 'Cargando...' : `${totalPeriodoHHMM} horas`}
-                </div>
-
-                <div style={s.msg}>{msg}</div>
-
-                <div style={s.hr} />
-
-                {loadingPeriodo ? (
-                  <div style={s.small}>Cargando...</div>
-                ) : modo === 'DIA' ? (
-                  registrosPeriodo.length === 0 ? (
-                    <div style={s.small}>(Sin registros ese día)</div>
-                  ) : (
-                    <ul style={s.list}>
-                      {registrosPeriodo.map((r) => (
-                        <li key={r.id} style={s.li}>
-                          <b>{formatearFechaDDMMYYYY(r.fecha)}</b> —{' '}
-                          <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b> —
-                          Salida: <b>{r.salida ?? '-'}</b>
-                          {r.nota ? ` — Nota: ${r.nota}` : ''}
-                        </li>
-                      ))}
-                    </ul>
-                  )
-                ) : gruposPeriodo.length === 0 ? (
-                  <div style={s.small}>(Sin registros en el periodo)</div>
+                {esInspector && !empleadoObjetivoId ? (
+                  <div style={s.small}>
+                    🔎 Selecciona un empleado para ver su histórico.
+                  </div>
                 ) : (
                   <>
-                    {gruposPeriodo.map((g) => (
-                      <div key={g.fecha} style={{ marginBottom: 12 }}>
-                        <div style={{ fontWeight: 900 }}>
-                          {formatearFechaDDMMYYYY(g.fecha)} — Total neto:{' '}
-                          <span style={{ color: C.rojo }}>
-                            {minutesToHHMM(g.totalMin)}
-                          </span>{' '}
-                          h
-                        </div>
-                        <ul style={{ ...s.list, marginTop: 6 }}>
-                          {g.items.map((r) => (
+                    <div style={s.row}>
+                      <div style={s.label}>Periodo</div>
+                      <button
+                        style={btnStyle(modo === 'DIA' || loadingPeriodo, 'ghost')}
+                        onClick={() => setModo('DIA')}
+                        disabled={modo === 'DIA' || loadingPeriodo}
+                      >
+                        Día
+                      </button>
+                      <button
+                        style={btnStyle(modo === 'SEMANA' || loadingPeriodo, 'ghost')}
+                        onClick={() => setModo('SEMANA')}
+                        disabled={modo === 'SEMANA' || loadingPeriodo}
+                      >
+                        Semana
+                      </button>
+                      <button
+                        style={btnStyle(modo === 'MES' || loadingPeriodo, 'ghost')}
+                        onClick={() => setModo('MES')}
+                        disabled={modo === 'MES' || loadingPeriodo}
+                      >
+                        Mes
+                      </button>
+                      <button
+                        style={btnStyle(modo === 'RANGO' || loadingPeriodo, 'ghost')}
+                        onClick={() => setModo('RANGO')}
+                        disabled={modo === 'RANGO' || loadingPeriodo}
+                      >
+                        Rango
+                      </button>
+                    </div>
+
+                    {modo !== 'RANGO' ? (
+                      <div style={s.row}>
+                        <div style={s.label}>Fecha</div>
+                        <input
+                          type="date"
+                          value={fechaSel}
+                          onChange={(e) => setFechaSel(e.target.value)}
+                          disabled={loadingPeriodo}
+                          style={{ ...s.input, maxWidth: 220 }}
+                        />
+                        <button
+                          style={btnStyle(loadingPeriodo, 'ghost')}
+                          onClick={() => setFechaSel(fechaLocalYYYYMMDD())}
+                          disabled={loadingPeriodo}
+                        >
+                          Hoy
+                        </button>
+
+                        <button
+                          style={btnStyle(loadingPeriodo, 'primary')}
+                          onClick={() =>
+                            exportarXLSX({
+                              empresaNombre: EMPRESA_NOMBRE_EXCEL,
+                              empleadoNombre: empleadoNombre,
+                              modo,
+                              fechaSel,
+                              fechaDesde,
+                              fechaHasta,
+                              registrosPeriodo,
+                              totalPeriodoHHMM,
+                            })
+                          }
+                          disabled={loadingPeriodo || (esInspector && !empleadoObjetivoId)}
+                        >
+                          Exportar Excel
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={s.row}>
+                        <div style={s.label}>Desde</div>
+                        <input
+                          type="date"
+                          value={fechaDesde}
+                          onChange={(e) => setFechaDesde(e.target.value)}
+                          disabled={loadingPeriodo}
+                          style={{ ...s.input, maxWidth: 220 }}
+                        />
+                        <div style={s.label}>Hasta</div>
+                        <input
+                          type="date"
+                          value={fechaHasta}
+                          onChange={(e) => setFechaHasta(e.target.value)}
+                          disabled={loadingPeriodo}
+                          style={{ ...s.input, maxWidth: 220 }}
+                        />
+                        <button
+                          style={btnStyle(loadingPeriodo, 'ghost')}
+                          onClick={() => {
+                            const h = fechaLocalYYYYMMDD();
+                            setFechaDesde(h);
+                            setFechaHasta(h);
+                          }}
+                          disabled={loadingPeriodo}
+                        >
+                          Hoy
+                        </button>
+
+                        <button
+                          style={btnStyle(loadingPeriodo, 'primary')}
+                          onClick={() =>
+                            exportarXLSX({
+                              empresaNombre: EMPRESA_NOMBRE_EXCEL,
+                              empleadoNombre: empleadoNombre,
+                              modo,
+                              fechaSel,
+                              fechaDesde,
+                              fechaHasta,
+                              registrosPeriodo,
+                              totalPeriodoHHMM,
+                            })
+                          }
+                          disabled={loadingPeriodo || (esInspector && !empleadoObjetivoId)}
+                        >
+                          Exportar Excel
+                        </button>
+                      </div>
+                    )}
+
+                    <div style={s.small}>
+                      <b>
+                        Total{' '}
+                        {modo === 'DIA'
+                          ? 'del día'
+                          : modo === 'SEMANA'
+                          ? 'semanal'
+                          : modo === 'MES'
+                          ? 'mensual'
+                          : 'del rango'}{' '}
+                        (neto):
+                      </b>{' '}
+                      {loadingPeriodo ? 'Cargando...' : `${totalPeriodoHHMM} horas`}
+                    </div>
+
+                    <div style={s.msg}>{msg}</div>
+
+                    <div style={s.hr} />
+
+                    {loadingPeriodo ? (
+                      <div style={s.small}>Cargando...</div>
+                    ) : modo === 'DIA' ? (
+                      registrosPeriodo.length === 0 ? (
+                        <div style={s.small}>(Sin registros ese día)</div>
+                      ) : (
+                        <ul style={s.list}>
+                          {registrosPeriodo.map((r) => (
                             <li key={r.id} style={s.li}>
-                              {r.tipo} — Entrada: <b>{r.entrada ?? '-'}</b> —
-                              Salida: <b>{r.salida ?? '-'}</b>
+                              <b>{formatearFechaDDMMYYYY(r.fecha)}</b> —{' '}
+                              <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b>{' '}
+                              — Salida: <b>{r.salida ?? '-'}</b>
                               {r.nota ? ` — Nota: ${r.nota}` : ''}
                             </li>
                           ))}
                         </ul>
-                      </div>
-                    ))}
+                      )
+                    ) : gruposPeriodo.length === 0 ? (
+                      <div style={s.small}>(Sin registros en el periodo)</div>
+                    ) : (
+                      <>
+                        {gruposPeriodo.map((g) => (
+                          <div key={g.fecha} style={{ marginBottom: 12 }}>
+                            <div style={{ fontWeight: 900 }}>
+                              {formatearFechaDDMMYYYY(g.fecha)} — Total neto:{' '}
+                              <span style={{ color: C.rojo }}>
+                                {minutesToHHMM(g.totalMin)}
+                              </span>{' '}
+                              h
+                            </div>
+                            <ul style={{ ...s.list, marginTop: 6 }}>
+                              {g.items.map((r) => (
+                                <li key={r.id} style={s.li}>
+                                  {r.tipo} — Entrada: <b>{r.entrada ?? '-'}</b> —{' '}
+                                  Salida: <b>{r.salida ?? '-'}</b>
+                                  {r.nota ? ` — Nota: ${r.nota}` : ''}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ))}
+                      </>
+                    )}
                   </>
                 )}
               </div>
@@ -1269,7 +1401,7 @@ export default function App() {
         )}
       </div>
 
-      {/* Barra inferior sticky con botones grandes (NO inspector) */}
+      {/* Barra inferior sticky con botones grandes */}
       {session && tab === 'FICHAR' && !esInspector && (
         <div style={s.bottomBar}>
           <div style={s.bottomInner}>
