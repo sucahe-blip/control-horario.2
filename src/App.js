@@ -1009,10 +1009,8 @@ export default function App() {
               Puedes solicitar acceso, rectificación, supresión, oposición o limitación escribiendo a {EMPRESA.email}.
             </div>
 
-            <div style={{ marginTop: 12, opacity: 0.75, fontWeight: 800 }}>
-              (Texto orientativo. Si queréis, lo ajustamos al 100% a vuestra política interna.)
-            </div>
-          </div>
+           
+        
         </Modal>
       )}
     </div>
