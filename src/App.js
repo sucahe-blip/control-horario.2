@@ -9,11 +9,15 @@ import * as XLSX from 'xlsx';
 const EMPRESA_NOMBRE_EXCEL = 'CAÑIZARES, S.A.';
 const EMPRESA_NOMBRE_UI = 'Cañizares S.A.';
 
+// URL pública de tu app (Vercel)
+const APP_URL = 'https://control-horario-2.vercel.app';
+// Ruta (puede no existir “realmente”; la capturamos en App.js)
+const RESET_PATH = '/reset';
+
 /* =========================
    FACTORES / TIEMPOS
    ========================= */
 
-// Solo suman Trabajo y restan Pausa
 function tipoFactor(tipo) {
   if (tipo === 'Pausa') return -1;
   if (tipo === 'Trabajo') return 1;
@@ -93,7 +97,7 @@ function agruparPorFecha(registros) {
 
 function startOfWeekISO(dateISO) {
   const d = new Date(dateISO + 'T00:00:00');
-  const day = d.getDay(); // 0 dom, 1 lun...
+  const day = d.getDay();
   const diff = day === 0 ? -6 : 1 - day;
   d.setDate(d.getDate() + diff);
   return fechaLocalYYYYMMDD(d);
@@ -211,6 +215,67 @@ function exportarXLSX({
 }
 
 /* =========================
+   MODAL GENÉRICO
+   ========================= */
+function Modal({ open, title, children, onClose }) {
+  if (!open) return null;
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,.35)',
+        display: 'grid',
+        placeItems: 'center',
+        padding: 14,
+        zIndex: 9999,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: '100%',
+          maxWidth: 520,
+          background: '#fff',
+          borderRadius: 18,
+          border: '1px solid #e5e7eb',
+          boxShadow: '0 25px 60px rgba(0,0,0,.25)',
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            padding: 14,
+            borderBottom: '1px solid #e5e7eb',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 10,
+          }}
+        >
+          <div style={{ fontWeight: 900 }}>{title}</div>
+          <button
+            onClick={onClose}
+            style={{
+              border: '1px solid #e5e7eb',
+              background: '#fff',
+              borderRadius: 12,
+              padding: '8px 10px',
+              fontWeight: 900,
+              cursor: 'pointer',
+            }}
+          >
+            Cerrar
+          </button>
+        </div>
+        <div style={{ padding: 14 }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/* =========================
    APP
    ========================= */
 
@@ -251,6 +316,19 @@ export default function App() {
 
   // Reloj
   const [now, setNow] = useState(() => new Date());
+
+  // ====== MODALES: Password reset + privacidad
+  const [openReset, setOpenReset] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetInfo, setResetInfo] = useState('');
+  const [openPrivacidad, setOpenPrivacidad] = useState(false);
+
+  // “Pantalla” de cambio de contraseña al volver del email
+  const [openSetNewPassword, setOpenSetNewPassword] = useState(false);
+  const [newPass1, setNewPass1] = useState('');
+  const [newPass2, setNewPass2] = useState('');
+  const [setPassInfo, setSetPassInfo] = useState('');
+
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(id);
@@ -260,7 +338,7 @@ export default function App() {
   const esAdmin = !!profile?.es_admin;
 
   const empleadoObjetivoId = esInspector
-    ? (empleadoSel || null) // Opción B: inspector DEBE elegir
+    ? (empleadoSel || null)
     : esAdmin
     ? (empleadoSel || profile?.empleado_id)
     : profile?.empleado_id;
@@ -289,13 +367,28 @@ export default function App() {
     )}`;
   }, [now]);
 
+  /* =========================
+     Detectar URL de reset:
+     Si el usuario abre el email y entra en /reset con token,
+     Supabase dispara onAuthStateChange con event PASSWORD_RECOVERY
+     o nos deja session temporal para updateUser.
+     ========================= */
+  useEffect(() => {
+    const path = window.location?.pathname || '';
+    if (path.startsWith(RESET_PATH)) {
+      // Abrimos modal de nueva contraseña
+      setOpenSetNewPassword(true);
+      setSetPassInfo('Introduce una nueva contraseña.');
+    }
+  }, []);
+
   /* -------- Auth -------- */
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session ?? null);
     });
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, newSession) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
       setSession(newSession);
       setProfile(null);
       setAbiertoTrabajo(null);
@@ -311,6 +404,13 @@ export default function App() {
       setEmpleadoNombre('');
       setNota('');
       setTab('FICHAR');
+
+      // Si venimos de recuperación de contraseña
+      if (event === 'PASSWORD_RECOVERY') {
+        setOpenSetNewPassword(true);
+        setSetPassInfo('Introduce una nueva contraseña.');
+      }
+
       setMsg(newSession ? 'OK ✅' : 'Sesión cerrada');
     });
 
@@ -358,14 +458,13 @@ export default function App() {
       if (esAdmin && !empleadoSel && profile?.empleado_id) {
         setEmpleadoSel(profile.empleado_id);
       }
-      // Inspector: no autoselecciona
     };
 
     cargarEmpleados();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [esAdmin, esInspector, profile?.empleado_id]);
 
-  /* -------- Nombre empleado (UI y Excel) -------- */
+  /* -------- Nombre empleado -------- */
   useEffect(() => {
     const cargarNombre = async () => {
       if (!empleadoObjetivoId) {
@@ -533,7 +632,58 @@ export default function App() {
   };
 
   /* =========================
-     FICHAJES (solo Trabajo/Pausa)
+     PASSWORD RESET: enviar email
+     ========================= */
+  const enviarReset = async () => {
+    const mail = (resetEmail || email || '').trim();
+    if (!mail) {
+      setResetInfo('⚠️ Escribe tu email.');
+      return;
+    }
+    setResetInfo('Enviando...');
+    const { error } = await supabase.auth.resetPasswordForEmail(mail, {
+      redirectTo: `${APP_URL}${RESET_PATH}`,
+    });
+    if (error) setResetInfo('ERROR: ' + error.message);
+    else setResetInfo('✅ Te hemos enviado un email para restablecer la contraseña.');
+  };
+
+  /* =========================
+     PASSWORD RESET: guardar nueva contraseña
+     (solo funciona cuando vienes desde el enlace)
+     ========================= */
+  const guardarNuevaContrasena = async () => {
+    setSetPassInfo('');
+    if (!newPass1 || newPass1.length < 6) {
+      setSetPassInfo('⚠️ La contraseña debe tener al menos 6 caracteres.');
+      return;
+    }
+    if (newPass1 !== newPass2) {
+      setSetPassInfo('⚠️ Las contraseñas no coinciden.');
+      return;
+    }
+
+    setSetPassInfo('Guardando...');
+    const { error } = await supabase.auth.updateUser({ password: newPass1 });
+    if (error) {
+      setSetPassInfo('ERROR: ' + error.message);
+      return;
+    }
+
+    setSetPassInfo('✅ Contraseña actualizada. Ya puedes iniciar sesión.');
+    setNewPass1('');
+    setNewPass2('');
+    // Cerramos modal y limpiamos URL (/reset)
+    setTimeout(() => {
+      setOpenSetNewPassword(false);
+      try {
+        window.history.replaceState({}, '', '/');
+      } catch {}
+    }, 800);
+  };
+
+  /* =========================
+     FICHAJES
      ========================= */
 
   async function entradaTrabajo() {
@@ -771,7 +921,7 @@ export default function App() {
       alignItems: 'flex-start',
       justifyContent: 'space-between',
       gap: 10,
-      flexWrap: 'wrap', // << clave para que no se pise en móvil
+      flexWrap: 'wrap',
     },
     brand: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 180 },
     brandName: { fontWeight: 900, fontSize: 22, lineHeight: 1.1 },
@@ -856,8 +1006,6 @@ export default function App() {
     },
     hr: { border: 0, borderTop: `1px solid ${C.borde}`, margin: '14px 0' },
     small: { fontSize: 12, color: C.gris, fontWeight: 800 },
-    list: { margin: 0, paddingLeft: 18 },
-    li: { margin: '8px 0', lineHeight: 1.25 },
     msg: { marginTop: 10, fontWeight: 900, color: C.negro },
 
     btn: (variant = 'primary') => {
@@ -930,6 +1078,17 @@ export default function App() {
       padding: 14,
     },
 
+    link: {
+      marginTop: 10,
+      background: 'transparent',
+      border: 'none',
+      padding: 0,
+      color: C.rojo,
+      fontWeight: 900,
+      cursor: 'pointer',
+      textAlign: 'left',
+    },
+
     employeePill: {
       display: 'inline-flex',
       alignItems: 'center',
@@ -989,10 +1148,6 @@ export default function App() {
     !!abiertoPausa ||
     esInspector;
 
-  /* =========================
-     RENDER
-     ========================= */
-
   // Si inspector, forzamos tab HISTORICO
   useEffect(() => {
     if (session && esInspector && tab !== 'HISTORICO') setTab('HISTORICO');
@@ -1019,7 +1174,6 @@ export default function App() {
               <div style={s.clockBig}>{horaGrande}</div>
             </div>
 
-            {/* SOLO CON SESIÓN: Estado */}
             {session && (
               <div style={s.statusPill}>
                 <div style={{ opacity: 0.9 }}>Estado</div>
@@ -1028,12 +1182,10 @@ export default function App() {
             )}
           </div>
 
-          {/* SOLO CON SESIÓN: banner inspección */}
           {session && esInspector && (
             <div style={s.inspectorBanner}>🔎 MODO INSPECCIÓN — Solo lectura</div>
           )}
 
-          {/* SOLO CON SESIÓN: tabs */}
           {session && (
             <div style={s.tabs}>
               <button
@@ -1074,12 +1226,31 @@ export default function App() {
               <button style={btnStyle(false, 'primary')} onClick={login}>
                 Entrar
               </button>
+
+              {/* LINKS QUE FALTABAN */}
+              <button
+                style={s.link}
+                onClick={() => {
+                  setResetEmail(email || '');
+                  setResetInfo('');
+                  setOpenReset(true);
+                }}
+              >
+                ¿Has olvidado la contraseña?
+              </button>
+
+              <button
+                style={s.link}
+                onClick={() => setOpenPrivacidad(true)}
+              >
+                Aviso de privacidad
+              </button>
+
               <div style={s.small}>{msg}</div>
             </div>
           </div>
         ) : (
           <div style={s.card}>
-            {/* Nombre del empleado */}
             <div
               style={{
                 display: 'flex',
@@ -1141,12 +1312,6 @@ export default function App() {
                       Ver
                     </button>
                   </div>
-
-                  {!esInspector && !estoyViendoMiEmpleado && (
-                    <div style={{ ...s.small, fontWeight: 900 }}>
-                      (Viendo otro empleado)
-                    </div>
-                  )}
                 </div>
 
                 <div style={s.hr} />
@@ -1181,9 +1346,9 @@ export default function App() {
                   {hoy.length === 0 ? (
                     <div style={s.small}>(Sin registros hoy)</div>
                   ) : (
-                    <ul style={s.list}>
+                    <ul style={{ margin: 0, paddingLeft: 18 }}>
                       {hoy.map((r) => (
-                        <li key={r.id} style={s.li}>
+                        <li key={r.id} style={{ margin: '8px 0', lineHeight: 1.25 }}>
                           <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b> —
                           Salida: <b>{r.salida ?? '-'}</b>
                           {r.nota ? ` — Nota: ${r.nota}` : ''}
@@ -1351,9 +1516,9 @@ export default function App() {
                       registrosPeriodo.length === 0 ? (
                         <div style={s.small}>(Sin registros ese día)</div>
                       ) : (
-                        <ul style={s.list}>
+                        <ul style={{ margin: 0, paddingLeft: 18 }}>
                           {registrosPeriodo.map((r) => (
-                            <li key={r.id} style={s.li}>
+                            <li key={r.id} style={{ margin: '8px 0', lineHeight: 1.25 }}>
                               <b>{formatearFechaDDMMYYYY(r.fecha)}</b> —{' '}
                               <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b>{' '}
                               — Salida: <b>{r.salida ?? '-'}</b>
@@ -1375,9 +1540,9 @@ export default function App() {
                               </span>{' '}
                               h
                             </div>
-                            <ul style={{ ...s.list, marginTop: 6 }}>
+                            <ul style={{ margin: 0, paddingLeft: 18, marginTop: 6 }}>
                               {g.items.map((r) => (
-                                <li key={r.id} style={s.li}>
+                                <li key={r.id} style={{ margin: '8px 0', lineHeight: 1.25 }}>
                                   {r.tipo} — Entrada: <b>{r.entrada ?? '-'}</b> —{' '}
                                   Salida: <b>{r.salida ?? '-'}</b>
                                   {r.nota ? ` — Nota: ${r.nota}` : ''}
@@ -1396,7 +1561,7 @@ export default function App() {
         )}
       </div>
 
-      {/* Barra inferior sticky con botones grandes */}
+      {/* Barra inferior sticky */}
       {session && tab === 'FICHAR' && !esInspector && (
         <div style={s.bottomBar}>
           <div style={s.bottomInner}>
@@ -1424,6 +1589,162 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* MODAL: Enviar reset */}
+      <Modal
+        open={openReset}
+        title="Recuperar contraseña"
+        onClose={() => setOpenReset(false)}
+      >
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ fontSize: 13, color: '#374151', fontWeight: 700 }}>
+            Te enviaremos un email con un enlace para restablecer la contraseña.
+          </div>
+          <input
+            style={{
+              padding: '12px 12px',
+              borderRadius: 12,
+              border: '1px solid #e5e7eb',
+              width: '100%',
+              boxSizing: 'border-box',
+              fontSize: 16,
+            }}
+            placeholder="Email"
+            value={resetEmail}
+            onChange={(e) => setResetEmail(e.target.value)}
+          />
+          <button
+            style={{
+              height: 52,
+              borderRadius: 16,
+              border: '1px solid #b30000',
+              background: '#b30000',
+              color: '#fff',
+              fontWeight: 900,
+              cursor: 'pointer',
+            }}
+            onClick={enviarReset}
+          >
+            Enviar enlace
+          </button>
+          {resetInfo ? (
+            <div style={{ fontWeight: 900, color: '#111827' }}>{resetInfo}</div>
+          ) : null}
+        </div>
+      </Modal>
+
+      {/* MODAL: Nueva contraseña */}
+      <Modal
+        open={openSetNewPassword}
+        title="Restablecer contraseña"
+        onClose={() => setOpenSetNewPassword(false)}
+      >
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ fontSize: 13, color: '#374151', fontWeight: 700 }}>
+            Introduce una nueva contraseña (mínimo 6 caracteres).
+          </div>
+          <input
+            style={{
+              padding: '12px 12px',
+              borderRadius: 12,
+              border: '1px solid #e5e7eb',
+              width: '100%',
+              boxSizing: 'border-box',
+              fontSize: 16,
+            }}
+            placeholder="Nueva contraseña"
+            type="password"
+            value={newPass1}
+            onChange={(e) => setNewPass1(e.target.value)}
+          />
+          <input
+            style={{
+              padding: '12px 12px',
+              borderRadius: 12,
+              border: '1px solid #e5e7eb',
+              width: '100%',
+              boxSizing: 'border-box',
+              fontSize: 16,
+            }}
+            placeholder="Repite la contraseña"
+            type="password"
+            value={newPass2}
+            onChange={(e) => setNewPass2(e.target.value)}
+          />
+
+          <button
+            style={{
+              height: 52,
+              borderRadius: 16,
+              border: '1px solid #b30000',
+              background: '#b30000',
+              color: '#fff',
+              fontWeight: 900,
+              cursor: 'pointer',
+            }}
+            onClick={guardarNuevaContrasena}
+          >
+            Guardar contraseña
+          </button>
+
+          {setPassInfo ? (
+            <div style={{ fontWeight: 900, color: '#111827' }}>{setPassInfo}</div>
+          ) : null}
+        </div>
+      </Modal>
+
+      {/* MODAL: Privacidad */}
+      <Modal
+        open={openPrivacidad}
+        title="Aviso de privacidad"
+        onClose={() => setOpenPrivacidad(false)}
+      >
+        <div style={{ display: 'grid', gap: 10, fontSize: 13, color: '#111827' }}>
+          <div style={{ fontWeight: 900 }}>
+            Responsable del tratamiento
+          </div>
+          <div>
+            <b>Cañizares, Instalaciones y Proyectos, S.A.</b><br />
+            CIF: <b>A78593316</b><br />
+            Calle Islas Cíes 35, 28035 Madrid<br />
+            Email: <b>canizares@jcanizares.com</b>
+          </div>
+
+          <div style={{ fontWeight: 900, marginTop: 6 }}>Finalidad</div>
+          <div>
+            Gestión del <b>registro de jornada</b> y control horario del personal.
+          </div>
+
+          <div style={{ fontWeight: 900, marginTop: 6 }}>Base jurídica</div>
+          <div>
+            Cumplimiento de obligaciones legales en materia laboral y ejecución de la relación laboral.
+          </div>
+
+          <div style={{ fontWeight: 900, marginTop: 6 }}>Datos tratados</div>
+          <div>
+            Identificación del usuario, fichajes (fecha, hora de entrada/salida, tipo) y <b>nota</b> asociada al fichaje.
+          </div>
+
+          <div style={{ fontWeight: 900, marginTop: 6 }}>Conservación</div>
+          <div>
+            Los datos se conservarán durante el plazo legal aplicable al registro de jornada y, en su caso, durante los plazos de prescripción de responsabilidades.
+          </div>
+
+          <div style={{ fontWeight: 900, marginTop: 6 }}>Destinatarios</div>
+          <div>
+            No se cederán datos a terceros salvo obligación legal. Podrán acceder personal autorizado y, en su caso, autoridades competentes (p. ej. Inspección de Trabajo).
+          </div>
+
+          <div style={{ fontWeight: 900, marginTop: 6 }}>Derechos</div>
+          <div>
+            Puedes ejercer tus derechos de acceso, rectificación, supresión, limitación y otros derechos reconocidos, contactando con <b>canizares@jcanizares.com</b>.
+          </div>
+
+          <div style={{ fontSize: 12, color: '#6b7280', fontWeight: 800, marginTop: 6 }}>
+            *Este aviso es un texto base. Si queréis, lo dejo aún más “legal” (RGPD/LOPDGDD) y lo adaptamos a vuestro procedimiento interno.
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
