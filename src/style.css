@@ -1,59 +1,36 @@
+/* Tipografías base */
 h1,
 p {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
     Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
 }
-* { box-sizing: border-box; }
 
-html, body, #root {
+* {
+  box-sizing: border-box;
+}
+
+/* Base */
+html,
+body,
+#root {
   height: 100%;
   width: 100%;
   margin: 0;
   padding: 0;
 }
 
-/* si tu app tiene un contenedor principal, esto la estira */
-#root > div {
-  min-height: 100vh;
-  width: 100%;
-}
-
-/* “safe area” iPhone (notch) */
+/* Safe area + layout general */
 body {
-  padding-top: env(safe-area-inset-top);
-  padding-right: env(safe-area-inset-right);
-  padding-bottom: env(safe-area-inset-bottom);
-  padding-left: env(safe-area-inset-left);
-}
-/* evita que textos largos rompan el layout */
-.fecha, .fecha-hoy, .dateBadge, .chip-fecha {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* si la cabecera tiene elementos en fila (logo + fecha), deja que se ajuste */
-.header, .cabecera, .topBar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap; /* clave: si no cabe, baja de línea */
-}
-
-/* si la fecha va a la derecha tipo “pastilla” */
-.fecha, .fecha-hoy, .dateBadge, .chip-fecha {
-  min-width: 0; /* clave para que el ellipsis funcione en flex */
-}
-/* Ajuste general para modo app (iPhone / Android) */
-body {
-  margin: 0;
-  padding: 0;
   min-height: 100vh;
   background: #f5f5f5;
   display: flex;
   justify-content: center;
   align-items: flex-start;
+
+  padding-top: env(safe-area-inset-top);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
 }
 
 /* Contenedor principal */
@@ -64,21 +41,35 @@ body {
   box-sizing: border-box;
 }
 
-/* Tarjeta superior roja */
+/* Textos largos */
+.fecha,
+.fecha-hoy,
+.dateBadge,
+.chip-fecha {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Cabeceras flexibles */
+.header,
+.cabecera,
+.topBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* Tarjeta superior */
 .header-card {
   margin-top: 10px;
   padding: 16px;
   border-radius: 20px;
 }
 
-/* Fecha centrada y que no se salga */
-.fecha-hoy {
-  text-align: center;
-  font-size: 14px;
-  white-space: normal;
-}
-
-/* Estado centrado */
+/* Estado */
 .estado-box {
   text-align: center;
   margin-top: 8px;
@@ -89,5 +80,3 @@ button {
   width: 100%;
   max-width: 100%;
 }
-
-
