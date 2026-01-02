@@ -1090,8 +1090,10 @@ const styles = {
 
   // <-- AQUÍ está el arreglo para que NO se monte "Salir" con el nombre:
   userRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 },
+flexWrap:  “nowrap”,      //  <- importante
+},
   userPill: {
-    flex: 1,
+    flex: “1  1 auto”
     minWidth: 0,
     display: "flex",
     alignItems: "center",
@@ -1103,19 +1105,13 @@ const styles = {
     fontSize: 20,
     overflow: "hidden",
   },
-  roleBadge: {
-    marginLeft: 10,
-    fontSize: 12,
-    padding: "4px 8px",
-    borderRadius: 999,
-    background: "#111827",
-    color: "white",
-    fontWeight: 950,
-    letterSpacing: 0.6,
-    flexShrink: 0,
-  },
-  btnOut: {
-    flexShrink: 0,
+    btnOut: {
+    flexShrink: “0 0 auto”,
+    width : auto”, 
+   minWidth : 110,
+   display: “ inline-flex”
+   justifyContent: “center”,
+    WhiteSpace: “nowrap”	
     borderRadius: 18,
     padding: "12px 16px",
     border: "2px solid rgba(0,0,0,0.10)",
