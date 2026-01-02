@@ -1,567 +1,1750 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { supabase } from "./supabase";
-import "./style.css";
+import React, { useEffect, useMemo, useState } from 'react';
+import { supabase } from './supabase';
+import * as XLSX from 'xlsx';
 
-/* ===================== CONFIG ===================== */
+/* =========================
+   CONFIG
+   ========================= */
 
-const EMPRESA = {
-  nombre: "Cañizares, Instalaciones y Proyectos, S.A.",
-  cif: "A78593316",
-  direccion: "Calle Islas Cíes 35, 28035 Madrid",
-  email: "canizares@jcanizares.com",
-};
+const EMPRESA_NOMBRE_EXCEL = 'CAÑIZARES, S.A.';
+const EMPRESA_NOMBRE_UI = 'Cañizares S.A.';
 
-// COLUMNAS REALES DE TU BD
-const FECHA_COL = "fecha";
-const ENTRADA_COL = "entrada";
-const SALIDA_COL = "salida";
+// URL pública de tu app (Vercel)
+const APP_URL = 'https://control-horario-2.vercel.app';
+// Ruta (puede no existir “realmente”; la capturamos en App.js)
+const RESET_PATH = '/reset';
 
-/* ===================== HELPERS ===================== */
+/* =========================
+   FACTORES / TIEMPOS
+   ========================= */
 
-const pad = (n) => String(n).padStart(2, "0");
+function tipoFactor(tipo) {
+  if (tipo === 'Pausa') return -1;
+  if (tipo === 'Trabajo') return 1;
+  return 0;
+}
 
-const hora = (d) =>
-  `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
 
-const fechaLarga = (d) =>
-  `Hoy, ${["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"][d.getDay()]}, ${d.getDate()} de ${
-    [
-      "enero",
-      "febrero",
-      "marzo",
-      "abril",
-      "mayo",
-      "junio",
-      "julio",
-      "agosto",
-      "septiembre",
-      "octubre",
-      "noviembre",
-      "diciembre",
-    ][d.getMonth()]
-  } de ${d.getFullYear()}`;
+function fechaLocalYYYYMMDD(d = new Date()) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
 
-const startOfDay = (d) => {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x.toISOString();
-};
+function horaLocalHHMM(d = new Date()) {
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
 
-const endOfDay = (d) => {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x.toISOString();
-};
+function fechaHoraExportacion() {
+  const d = new Date();
+  return `${fechaLocalYYYYMMDD(d)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
 
-const toInputDate = (d) =>
-  `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+function formatearFechaDDMMYYYY(isoYYYYMMDD) {
+  if (!isoYYYYMMDD) return '';
+  const [y, m, d] = String(isoYYYYMMDD).split('-');
+  if (!y || !m || !d) return String(isoYYYYMMDD);
+  return `${d}-${m}-${y}`;
+}
 
-/* ===================== APP ===================== */
+function hhmmToMinutes(hhmm) {
+  if (!hhmm) return null;
+  const [h, m] = String(hhmm).slice(0, 5).split(':').map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  return h * 60 + m;
+}
+
+function minutesToHHMM(mins) {
+  const safe = Math.max(0, mins || 0);
+  const h = Math.floor(safe / 60);
+  const m = safe % 60;
+  return `${pad2(h)}:${pad2(m)}`;
+}
+
+function minutosDeRegistro(r) {
+  const e = hhmmToMinutes(r.entrada);
+  const s = hhmmToMinutes(r.salida);
+  if (e == null || s == null) return 0;
+  if (s < e) return 0;
+  const base = s - e;
+  return base * tipoFactor(r.tipo);
+}
+
+function totalMinutos(registros) {
+  return (registros ?? []).reduce((acc, r) => acc + minutosDeRegistro(r), 0);
+}
+
+function agruparPorFecha(registros) {
+  const map = new Map();
+  for (const r of registros ?? []) {
+    const f = r.fecha;
+    if (!map.has(f)) map.set(f, { fecha: f, items: [], totalMin: 0 });
+    const g = map.get(f);
+    g.items.push(r);
+    g.totalMin += minutosDeRegistro(r);
+  }
+
+  return Array.from(map.values())
+    .sort((a, b) => a.fecha.localeCompare(b.fecha))
+    .map((g) => ({
+      ...g,
+      items: g.items.sort((x, y) =>
+        (x.entrada ?? '').localeCompare(y.entrada ?? '')
+      ),
+    }));
+}
+
+function startOfWeekISO(dateISO) {
+  const d = new Date(dateISO + 'T00:00:00');
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  return fechaLocalYYYYMMDD(d);
+}
+
+function endOfWeekISO(dateISO) {
+  const start = new Date(startOfWeekISO(dateISO) + 'T00:00:00');
+  start.setDate(start.getDate() + 6);
+  return fechaLocalYYYYMMDD(start);
+}
+
+function startOfMonthISO(dateISO) {
+  const d = new Date(dateISO + 'T00:00:00');
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-01`;
+}
+
+function endOfMonthISO(dateISO) {
+  const d = new Date(dateISO + 'T00:00:00');
+  const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  return fechaLocalYYYYMMDD(last);
+}
+
+function safeFilePart(s) {
+  return String(s || '')
+    .normalize('NFKD')
+    .replace(/[^\w\s.-]/g, '')
+    .trim()
+    .replace(/\s+/g, '_')
+    .slice(0, 60);
+}
+
+/* =========================
+   EXPORT EXCEL (PLANTILLA)
+   ========================= */
+
+function buildAOAForExcel({
+  empresaNombre,
+  empleadoNombre,
+  modo,
+  fechaSel,
+  fechaDesde,
+  fechaHasta,
+  registrosPeriodo,
+  totalPeriodoHHMM,
+}) {
+  const periodoTxt =
+    modo === 'DIA'
+      ? 'Día'
+      : modo === 'SEMANA'
+      ? 'Semana'
+      : modo === 'MES'
+      ? 'Mes'
+      : 'Rango';
+  const refTxt =
+    modo === 'RANGO'
+      ? `${formatearFechaDDMMYYYY(fechaDesde)} → ${formatearFechaDDMMYYYY(fechaHasta)}`
+      : formatearFechaDDMMYYYY(fechaSel);
+  const fechaListado = fechaHoraExportacion();
+
+  const tableRows = (registrosPeriodo ?? []).map((r) => [
+    formatearFechaDDMMYYYY(r.fecha),
+    (r.entrada ?? '').length === 5 ? `${r.entrada}:00` : (r.entrada ?? ''),
+    (r.salida ?? '').length === 5 ? `${r.salida}:00` : (r.salida ?? ''),
+    r.tipo ?? '',
+    r.nota ?? '',
+  ]);
+
+  return [
+    [empresaNombre],
+    [],
+    ['EMPLEADO', empleadoNombre || ''],
+    ['PERIODO', periodoTxt],
+    ['REFERENCIA', refTxt],
+    ['TOTAL NETO', `${totalPeriodoHHMM} horas`],
+    ['FECHA LISTADO', fechaListado],
+    [],
+    ['Fecha', 'Entrada', 'Salida', 'Tipo', 'Nota'],
+    ...tableRows,
+  ];
+}
+
+function exportarXLSX({
+  empresaNombre,
+  empleadoNombre,
+  modo,
+  fechaSel,
+  fechaDesde,
+  fechaHasta,
+  registrosPeriodo,
+  totalPeriodoHHMM,
+}) {
+  const aoa = buildAOAForExcel({
+    empresaNombre,
+    empleadoNombre,
+    modo,
+    fechaSel,
+    fechaDesde,
+    fechaHasta,
+    registrosPeriodo,
+    totalPeriodoHHMM,
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Historico');
+
+  const nombreEmpleado = safeFilePart(empleadoNombre || 'Empleado');
+  const ref =
+    modo === 'RANGO'
+      ? `${fechaDesde}_a_${fechaHasta}`
+      : fechaSel;
+
+  const nombre = `historico_${modo.toLowerCase()}_${ref}_${nombreEmpleado}.xlsx`;
+  XLSX.writeFile(wb, nombre);
+}
+
+/* =========================
+   MODAL GENÉRICO
+   ========================= */
+function Modal({ open, title, children, onClose }) {
+  if (!open) return null;
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,.35)',
+        display: 'grid',
+        placeItems: 'center',
+        padding: 14,
+        zIndex: 9999,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: '100%',
+          maxWidth: 520,
+          background: '#fff',
+          borderRadius: 18,
+          border: '1px solid #e5e7eb',
+          boxShadow: '0 25px 60px rgba(0,0,0,.25)',
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            padding: 14,
+            borderBottom: '1px solid #e5e7eb',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 10,
+          }}
+        >
+          <div style={{ fontWeight: 900 }}>{title}</div>
+          <button
+            onClick={onClose}
+            style={{
+              border: '1px solid #e5e7eb',
+              background: '#fff',
+              borderRadius: 12,
+              padding: '8px 10px',
+              fontWeight: 900,
+              cursor: 'pointer',
+            }}
+          >
+            Cerrar
+          </button>
+        </div>
+        <div style={{ padding: 14 }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/* =========================
+   APP
+   ========================= */
 
 export default function App() {
-  const [now, setNow] = useState(new Date());
   const [session, setSession] = useState(null);
-  const [perfil, setPerfil] = useState(null);
-  const [empleado, setEmpleado] = useState(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
 
-  const [email, setEmail] = useState("");
-  const [pass, setPass] = useState("");
+  const [profile, setProfile] = useState(null);
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  const [msg, setMsg] = useState(null);
-  const [tab, setTab] = useState("inicio");
+  // Abiertos del día
+  const [abiertoTrabajo, setAbiertoTrabajo] = useState(null);
+  const [abiertoPausa, setAbiertoPausa] = useState(null);
+  const [hoy, setHoy] = useState([]);
 
-  const [nota, setNota] = useState("");
-  const [registrosHoy, setRegistrosHoy] = useState([]);
+  // HISTÓRICO
+  const [modo, setModo] = useState('DIA'); // DIA | SEMANA | MES | RANGO
+  const [fechaSel, setFechaSel] = useState(fechaLocalYYYYMMDD());
+  const [fechaDesde, setFechaDesde] = useState(fechaLocalYYYYMMDD());
+  const [fechaHasta, setFechaHasta] = useState(fechaLocalYYYYMMDD());
+  const [registrosPeriodo, setRegistrosPeriodo] = useState([]);
+  const [loadingPeriodo, setLoadingPeriodo] = useState(false);
 
-  const [showRecover, setShowRecover] = useState(false);
-  const [recoveryMode, setRecoveryMode] = useState(false);
-  const [newPass1, setNewPass1] = useState("");
-  const [newPass2, setNewPass2] = useState("");
+  // ADMIN / INSPECTOR
+  const [empleados, setEmpleados] = useState([]);
+  const [empleadoSel, setEmpleadoSel] = useState('');
 
-  /* ===================== CLOCK ===================== */
+  // Nombre empleado (UI y Excel)
+  const [empleadoNombre, setEmpleadoNombre] = useState('');
+
+  // Nota
+  const [nota, setNota] = useState('');
+
+  // Tabs
+  const [tab, setTab] = useState('FICHAR'); // FICHAR | HISTORICO
+
+  // Reloj
+  const [now, setNow] = useState(() => new Date());
+
+  // ====== MODALES: Password reset + privacidad
+  const [openReset, setOpenReset] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetInfo, setResetInfo] = useState('');
+  const [openPrivacidad, setOpenPrivacidad] = useState(false);
+
+  // “Pantalla” de cambio de contraseña al volver del email
+  const [openSetNewPassword, setOpenSetNewPassword] = useState(false);
+  const [newPass1, setNewPass1] = useState('');
+  const [newPass2, setNewPass2] = useState('');
+  const [setPassInfo, setSetPassInfo] = useState('');
+
   useEffect(() => {
-    const i = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(i);
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
   }, []);
 
-  /* ===================== AUTH ===================== */
+  const esInspector = !!(profile?.es_inspector || profile?.rol === 'inspector');
+  const esAdmin = !!profile?.es_admin;
+
+  const empleadoObjetivoId = esInspector
+    ? (empleadoSel || null)
+    : esAdmin
+    ? (empleadoSel || profile?.empleado_id)
+    : profile?.empleado_id;
+
+  const estoyViendoMiEmpleado =
+    !!profile?.empleado_id && empleadoObjetivoId === profile.empleado_id;
+
+  /* -------- Formatos fecha/hora -------- */
+  const fechaLarga = useMemo(() => {
+    try {
+      const f = new Intl.DateTimeFormat('es-ES', {
+        weekday: 'short',
+        day: '2-digit',
+        month: 'long',
+        year: 'numeric',
+      }).format(now);
+      return f.charAt(0).toUpperCase() + f.slice(1);
+    } catch {
+      return now.toLocaleDateString();
+    }
+  }, [now]);
+
+  const horaGrande = useMemo(() => {
+    return `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(
+      now.getSeconds()
+    )}`;
+  }, [now]);
+
+  /* =========================
+     Detectar URL de reset:
+     Si el usuario abre el email y entra en /reset con token,
+     Supabase dispara onAuthStateChange con event PASSWORD_RECOVERY
+     o nos deja session temporal para updateUser.
+     ========================= */
+  useEffect(() => {
+    const path = window.location?.pathname || '';
+    if (path.startsWith(RESET_PATH)) {
+      // Abrimos modal de nueva contraseña
+      setOpenSetNewPassword(true);
+      setSetPassInfo('Introduce una nueva contraseña.');
+    }
+  }, []);
+
+  /* -------- Auth -------- */
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
+      setSession(data.session ?? null);
     });
 
-    const { data: sub } = supabase.auth.onAuthStateChange((evt, s) => {
-      setSession(s);
+    const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
+      setSession(newSession);
+      setProfile(null);
+      setAbiertoTrabajo(null);
+      setAbiertoPausa(null);
+      setHoy([]);
+      setModo('DIA');
+      setFechaSel(fechaLocalYYYYMMDD());
+      setFechaDesde(fechaLocalYYYYMMDD());
+      setFechaHasta(fechaLocalYYYYMMDD());
+      setRegistrosPeriodo([]);
+      setEmpleados([]);
+      setEmpleadoSel('');
+      setEmpleadoNombre('');
+      setNota('');
+      setTab('FICHAR');
 
-      if (evt === "PASSWORD_RECOVERY") {
-        setRecoveryMode(true);
+      // Si venimos de recuperación de contraseña
+      if (event === 'PASSWORD_RECOVERY') {
+        setOpenSetNewPassword(true);
+        setSetPassInfo('Introduce una nueva contraseña.');
       }
+
+      setMsg(newSession ? 'OK ✅' : 'Sesión cerrada');
     });
 
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  /* ===================== PERFIL ===================== */
+  /* -------- Perfil -------- */
   useEffect(() => {
-    if (!session?.user?.id) return;
+    const run = async () => {
+      if (!session?.user?.id) return;
 
-    (async () => {
-      const { data } = await supabase
-        .from("usuarios")
-        .select("*")
-        .eq("user_id", session.user.id)
-        .single();
+      setMsg('Cargando perfil...');
+      const { data, error } = await supabase
+        .from('usuarios')
+        .select('user_id, empleado_id, es_admin, es_inspector, rol')
+        .eq('user_id', session.user.id)
+        .maybeSingle();
 
-      setPerfil(data || null);
-
-      if (data?.empleado_id) {
-        const { data: emp } = await supabase
-          .from("empleados")
-          .select("*")
-          .eq("id", data.empleado_id)
-          .single();
-        setEmpleado(emp);
+      if (error) setMsg('ERROR: ' + error.message);
+      else {
+        setProfile(data);
+        setMsg('OK ✅');
       }
-    })();
+    };
+    run();
   }, [session]);
 
-  /* ===================== REGISTROS HOY ===================== */
+  /* -------- Admin/Inspector: empleados -------- */
   useEffect(() => {
-    if (!perfil?.empleado_id) return;
+    const cargarEmpleados = async () => {
+      if (!esAdmin && !esInspector) return;
 
-    const hoy = new Date();
+      const { data, error } = await supabase
+        .from('empleados')
+        .select('id, nombre')
+        .order('nombre', { ascending: true });
 
-    supabase
-      .from("registros")
-      .select("*")
-      .eq("empleado_id", perfil.empleado_id)
-      .gte(FECHA_COL, startOfDay(hoy))
-      .lte(FECHA_COL, endOfDay(hoy))
-      .order(ENTRADA_COL, { ascending: false })
-      .then(({ data }) => setRegistrosHoy(data || []));
-  }, [perfil]);
+      if (error) {
+        setMsg('ERROR cargando empleados: ' + error.message);
+        return;
+      }
 
-  /* ===================== LOGIN ===================== */
-  async function login(e) {
-    e.preventDefault();
+      setEmpleados(data ?? []);
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password: pass,
-    });
+      if (esAdmin && !empleadoSel && profile?.empleado_id) {
+        setEmpleadoSel(profile.empleado_id);
+      }
+    };
+
+    cargarEmpleados();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [esAdmin, esInspector, profile?.empleado_id]);
+
+  /* -------- Nombre empleado -------- */
+  useEffect(() => {
+    const cargarNombre = async () => {
+      if (!empleadoObjetivoId) {
+        setEmpleadoNombre('');
+        return;
+      }
+
+      const fromList = (empleados ?? []).find((e) => e.id === empleadoObjetivoId);
+      if (fromList?.nombre) {
+        setEmpleadoNombre(fromList.nombre);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('empleados')
+        .select('nombre')
+        .eq('id', empleadoObjetivoId)
+        .maybeSingle();
+
+      if (!error && data?.nombre) setEmpleadoNombre(data.nombre);
+    };
+
+    cargarNombre();
+  }, [empleadoObjetivoId, empleados]);
+
+  /* -------- Estado del día -------- */
+  async function cargarEstadoDia() {
+    if (esInspector) return;
+    if (!empleadoObjetivoId) return;
+
+    const fecha = fechaLocalYYYYMMDD();
+
+    const { data: tOpen } = await supabase
+      .from('registros')
+      .select('id, entrada, tipo')
+      .eq('empleado_id', empleadoObjetivoId)
+      .eq('fecha', fecha)
+      .eq('tipo', 'Trabajo')
+      .is('salida', null)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    setAbiertoTrabajo(tOpen ?? null);
+
+    const { data: pOpen } = await supabase
+      .from('registros')
+      .select('id, entrada, tipo')
+      .eq('empleado_id', empleadoObjetivoId)
+      .eq('fecha', fecha)
+      .eq('tipo', 'Pausa')
+      .is('salida', null)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    setAbiertoPausa(pOpen ?? null);
+
+    const { data: lista } = await supabase
+      .from('registros')
+      .select('id, fecha, entrada, salida, tipo, nota, created_at')
+      .eq('empleado_id', empleadoObjetivoId)
+      .eq('fecha', fecha)
+      .order('created_at', { ascending: true });
+
+    setHoy(lista ?? []);
+  }
+
+  /* -------- Histórico -------- */
+  async function cargarPeriodo(modoLocal, fechaISO, desdeR, hastaR) {
+    if (!empleadoObjetivoId) {
+      setRegistrosPeriodo([]);
+      return;
+    }
+
+    let desde = fechaISO;
+    let hasta = fechaISO;
+
+    if (modoLocal === 'SEMANA') {
+      desde = startOfWeekISO(fechaISO);
+      hasta = endOfWeekISO(fechaISO);
+    }
+    if (modoLocal === 'MES') {
+      desde = startOfMonthISO(fechaISO);
+      hasta = endOfMonthISO(fechaISO);
+    }
+    if (modoLocal === 'RANGO') {
+      desde = desdeR || fechaISO;
+      hasta = hastaR || fechaISO;
+      if (desde && hasta && desde > hasta) {
+        const tmp = desde;
+        desde = hasta;
+        hasta = tmp;
+      }
+    }
+
+    setLoadingPeriodo(true);
+    setMsg('Cargando histórico...');
+
+    const { data, error } = await supabase
+      .from('registros')
+      .select('id, fecha, entrada, salida, tipo, nota, created_at')
+      .eq('empleado_id', empleadoObjetivoId)
+      .gte('fecha', desde)
+      .lte('fecha', hasta)
+      .order('fecha', { ascending: true })
+      .order('created_at', { ascending: true });
 
     if (error) {
-      setMsg({ type: "err", text: error.message });
+      setMsg('ERROR histórico: ' + error.message);
+      setRegistrosPeriodo([]);
     } else {
-      setMsg({ type: "ok", text: "Sesión iniciada" });
-      setPass("");
+      setRegistrosPeriodo(data ?? []);
+      setMsg('OK ✅');
     }
+
+    setLoadingPeriodo(false);
   }
 
-  async function logout() {
+  useEffect(() => {
+    if (esInspector && !empleadoObjetivoId) {
+      setRegistrosPeriodo([]);
+      return;
+    }
+    if (!empleadoObjetivoId) return;
+
+    if (!esInspector) cargarEstadoDia();
+    cargarPeriodo(modo, fechaSel, fechaDesde, fechaHasta);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [empleadoObjetivoId]);
+
+  useEffect(() => {
+    if (esInspector && !empleadoObjetivoId) {
+      setRegistrosPeriodo([]);
+      return;
+    }
+    if (!empleadoObjetivoId) return;
+
+    cargarPeriodo(modo, fechaSel, fechaDesde, fechaHasta);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modo, fechaSel, fechaDesde, fechaHasta, empleadoObjetivoId]);
+
+  /* -------- Login / Logout -------- */
+  const login = async () => {
+    setMsg('Entrando...');
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (error) setMsg('ERROR: ' + error.message);
+  };
+
+  const logout = async () => {
     await supabase.auth.signOut();
     setSession(null);
-    setPerfil(null);
-    setEmpleado(null);
-  }
+    setProfile(null);
+    setHoy([]);
+    setAbiertoTrabajo(null);
+    setAbiertoPausa(null);
+    setRegistrosPeriodo([]);
+    setEmpleados([]);
+    setEmpleadoSel('');
+    setEmpleadoNombre('');
+    setMsg('Sesión cerrada');
+  };
 
-  /* ===================== RECOVERY ===================== */
-  async function sendRecovery() {
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: window.location.origin,
+  /* =========================
+     PASSWORD RESET: enviar email
+     ========================= */
+  const enviarReset = async () => {
+    const mail = (resetEmail || email || '').trim();
+    if (!mail) {
+      setResetInfo('⚠️ Escribe tu email.');
+      return;
+    }
+    setResetInfo('Enviando...');
+    const { error } = await supabase.auth.resetPasswordForEmail(mail, {
+      redirectTo: `${APP_URL}${RESET_PATH}`,
     });
+    if (error) setResetInfo('ERROR: ' + error.message);
+    else setResetInfo('✅ Te hemos enviado un email para restablecer la contraseña.');
+  };
 
-    if (error) setMsg({ type: "err", text: error.message });
-    else setMsg({ type: "ok", text: "Te hemos enviado un email." });
-  }
-
-  async function saveNewPassword() {
-    if (newPass1.length < 6) {
-      setMsg({ type: "err", text: "Mínimo 6 caracteres." });
+  /* =========================
+     PASSWORD RESET: guardar nueva contraseña
+     (solo funciona cuando vienes desde el enlace)
+     ========================= */
+  const guardarNuevaContrasena = async () => {
+    setSetPassInfo('');
+    if (!newPass1 || newPass1.length < 6) {
+      setSetPassInfo('⚠️ La contraseña debe tener al menos 6 caracteres.');
       return;
     }
     if (newPass1 !== newPass2) {
-      setMsg({ type: "err", text: "Las contraseñas no coinciden." });
+      setSetPassInfo('⚠️ Las contraseñas no coinciden.');
       return;
     }
 
-    await supabase.auth.updateUser({ password: newPass1 });
+    setSetPassInfo('Guardando...');
+    const { error } = await supabase.auth.updateUser({ password: newPass1 });
+    if (error) {
+      setSetPassInfo('ERROR: ' + error.message);
+      return;
+    }
 
-    setRecoveryMode(false);
-    setNewPass1("");
-    setNewPass2("");
-    await supabase.auth.signOut();
+    setSetPassInfo('✅ Contraseña actualizada. Ya puedes iniciar sesión.');
+    setNewPass1('');
+    setNewPass2('');
+    // Cerramos modal y limpiamos URL (/reset)
+    setTimeout(() => {
+      setOpenSetNewPassword(false);
+      try {
+        window.history.replaceState({}, '', '/');
+      } catch {}
+    }, 800);
+  };
+
+  /* =========================
+     FICHAJES
+     ========================= */
+
+  async function entradaTrabajo() {
+    if (esInspector) return;
+    if (!profile?.empleado_id) return;
+    if (!estoyViendoMiEmpleado) return;
+    if (busy) return;
+
+    if (abiertoTrabajo || abiertoPausa) {
+      setMsg('⚠️ Ya tienes un registro abierto. Finaliza o reanuda.');
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const fecha = fechaLocalYYYYMMDD();
+      const hora = horaLocalHHMM();
+      const notaLimpia = nota.trim();
+
+      const { error } = await supabase.from('registros').insert({
+        empleado_id: profile.empleado_id,
+        fecha,
+        tipo: 'Trabajo',
+        entrada: hora,
+        nota: notaLimpia ? notaLimpia : null,
+      });
+
+      if (error) setMsg('ERROR: ' + error.message);
+      else {
+        setMsg('✅ Jornada iniciada');
+        setNota('');
+      }
+
+      await cargarEstadoDia();
+      await cargarPeriodo(modo, fechaSel, fechaDesde, fechaHasta);
+    } finally {
+      setBusy(false);
+    }
   }
 
-  const estado =
-    registrosHoy.length === 0
-      ? "Fuera"
-      : registrosHoy[0].salida
-      ? "Fuera"
-      : "Dentro";
+  async function salidaTrabajo() {
+    if (esInspector) return;
+    if (!profile?.empleado_id) return;
+    if (!estoyViendoMiEmpleado) return;
+    if (busy) return;
 
-  const nombre = empleado
-    ? `${empleado.nombre || ""} ${empleado.apellidos || ""}`
-    : "(Sin nombre)";
+    if (!abiertoTrabajo) {
+      setMsg('⚠️ No hay jornada iniciada');
+      return;
+    }
+    if (abiertoPausa) {
+      setMsg('⏸️ Reanuda antes de finalizar');
+      return;
+    }
 
-  const haySesion = !!session?.user;
+    setBusy(true);
+    try {
+      const hora = horaLocalHHMM();
+      const notaLimpia = nota.trim();
 
-  /* ===================== RENDER ===================== */
+      const payload = { salida: hora };
+      if (notaLimpia) payload.nota = notaLimpia;
+
+      const { error } = await supabase
+        .from('registros')
+        .update(payload)
+        .eq('id', abiertoTrabajo.id);
+
+      if (error) setMsg('ERROR: ' + error.message);
+      else {
+        setMsg('✅ Jornada finalizada');
+        setNota('');
+      }
+
+      await cargarEstadoDia();
+      await cargarPeriodo(modo, fechaSel, fechaDesde, fechaHasta);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function iniciarPausa() {
+    if (esInspector) return;
+    if (!profile?.empleado_id) return;
+    if (!estoyViendoMiEmpleado) return;
+    if (busy) return;
+
+    if (!abiertoTrabajo) {
+      setMsg('⚠️ No puedes iniciar pausa si no has iniciado jornada');
+      return;
+    }
+    if (abiertoPausa) {
+      setMsg('⚠️ Ya hay una pausa abierta');
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const fecha = fechaLocalYYYYMMDD();
+      const hora = horaLocalHHMM();
+      const notaLimpia = nota.trim();
+
+      const { error: e1 } = await supabase
+        .from('registros')
+        .update({ salida: hora })
+        .eq('id', abiertoTrabajo.id);
+
+      if (e1) {
+        setMsg('ERROR: ' + e1.message);
+        return;
+      }
+
+      const { error: e2 } = await supabase.from('registros').insert({
+        empleado_id: profile.empleado_id,
+        fecha,
+        tipo: 'Pausa',
+        entrada: hora,
+        nota: notaLimpia ? notaLimpia : null,
+      });
+
+      if (e2) setMsg('ERROR: ' + e2.message);
+      else {
+        setMsg('⏸️ Pausa iniciada');
+        setNota('');
+      }
+
+      await cargarEstadoDia();
+      await cargarPeriodo(modo, fechaSel, fechaDesde, fechaHasta);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function terminarPausa() {
+    if (esInspector) return;
+    if (!profile?.empleado_id) return;
+    if (!estoyViendoMiEmpleado) return;
+    if (busy) return;
+
+    if (!abiertoPausa) {
+      setMsg('⚠️ No hay pausa abierta');
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const fecha = fechaLocalYYYYMMDD();
+      const hora = horaLocalHHMM();
+      const notaLimpia = nota.trim();
+
+      const payload = { salida: hora };
+      if (notaLimpia) payload.nota = notaLimpia;
+
+      const { error: e1 } = await supabase
+        .from('registros')
+        .update(payload)
+        .eq('id', abiertoPausa.id);
+
+      if (e1) {
+        setMsg('ERROR: ' + e1.message);
+        return;
+      }
+
+      const { error: e2 } = await supabase.from('registros').insert({
+        empleado_id: profile.empleado_id,
+        fecha,
+        tipo: 'Trabajo',
+        entrada: hora,
+        nota: null,
+      });
+
+      if (e2) setMsg('ERROR: ' + e2.message);
+      else {
+        setMsg('▶️ Reanudado');
+        setNota('');
+      }
+
+      await cargarEstadoDia();
+      await cargarPeriodo(modo, fechaSel, fechaDesde, fechaHasta);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* -------- Totales / estado -------- */
+  const totalHoyHHMM = minutesToHHMM(totalMinutos(hoy));
+  const totalPeriodoHHMM = minutesToHHMM(totalMinutos(registrosPeriodo));
+  const gruposPeriodo = agruparPorFecha(registrosPeriodo);
+
+  const estadoTexto = esInspector
+    ? '🔎 Inspección (solo lectura)'
+    : abiertoPausa
+    ? `⏸️ Pausa (desde ${abiertoPausa.entrada})`
+    : abiertoTrabajo
+    ? `🟢 Trabajo (desde ${abiertoTrabajo.entrada})`
+    : '⚪ Fuera';
+
+  /* =========================
+     UX MÓVIL: estilos
+     ========================= */
+
+  const C = {
+    rojo: '#b30000',
+    rojoClaro: '#ffeded',
+    gris: '#6b7280',
+    borde: '#e5e7eb',
+    fondo: '#f6f7fb',
+    blanco: '#ffffff',
+    negro: '#111827',
+  };
+
+  const s = {
+    page: {
+      minHeight: '100vh',
+      background: C.fondo,
+      fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, Arial',
+      padding: 14,
+      color: C.negro,
+    },
+    shell: {
+      maxWidth: 480,
+      margin: '0 auto',
+      paddingBottom: session ? 120 : 28,
+    },
+    header: {
+      background: C.rojo,
+      color: C.blanco,
+      borderRadius: 18,
+      padding: 14,
+      boxShadow: '0 10px 25px rgba(0,0,0,.08)',
+      overflow: 'hidden',
+    },
+    headerTop: {
+      display: 'flex',
+      alignItems: 'flex-start',
+      justifyContent: 'space-between',
+      gap: 10,
+      flexWrap: 'wrap',
+    },
+    brand: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 180 },
+    brandName: { fontWeight: 900, fontSize: 22, lineHeight: 1.1 },
+    brandSub: { fontSize: 13, opacity: 0.9, fontWeight: 800 },
+    datePill: {
+      background: 'rgba(255,255,255,.16)',
+      border: '1px solid rgba(255,255,255,.25)',
+      padding: '6px 10px',
+      borderRadius: 999,
+      fontSize: 12,
+      fontWeight: 800,
+      whiteSpace: 'nowrap',
+      textAlign: 'center',
+      maxWidth: '100%',
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      flexShrink: 0,
+    },
+    clock: {
+      marginTop: 10,
+      display: 'flex',
+      gap: 12,
+      alignItems: 'flex-end',
+      justifyContent: 'space-between',
+      flexWrap: 'wrap',
+    },
+    clockLeft: { minWidth: 200, flex: '1 1 auto' },
+    clockBig: {
+      fontSize: 34,
+      fontWeight: 900,
+      letterSpacing: 0.5,
+      lineHeight: 1,
+    },
+    statusPill: {
+      background: 'rgba(255,255,255,.16)',
+      border: '1px solid rgba(255,255,255,.25)',
+      padding: '8px 10px',
+      borderRadius: 14,
+      fontSize: 12,
+      fontWeight: 900,
+      textAlign: 'right',
+      minWidth: 160,
+      flex: '0 0 auto',
+    },
+    tabs: { marginTop: 12, display: 'flex', gap: 10 },
+    tabBtn: (active) => ({
+      flex: 1,
+      padding: '12px 12px',
+      borderRadius: 14,
+      border: `1px solid ${active ? C.rojo : C.borde}`,
+      background: active ? C.rojoClaro : C.blanco,
+      color: active ? C.rojo : C.negro,
+      fontWeight: 900,
+      cursor: 'pointer',
+      opacity: !session ? 0.6 : 1,
+    }),
+    card: {
+      marginTop: 12,
+      background: C.blanco,
+      border: `1px solid ${C.borde}`,
+      borderRadius: 18,
+      padding: 14,
+      boxShadow: '0 10px 25px rgba(0,0,0,.04)',
+    },
+    row: { display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' },
+    label: { fontSize: 12, fontWeight: 900, color: C.gris },
+    select: {
+      padding: '12px 12px',
+      borderRadius: 12,
+      border: `1px solid ${C.borde}`,
+      background: C.blanco,
+      minWidth: 160,
+      fontWeight: 900,
+    },
+    input: {
+      padding: '12px 12px',
+      borderRadius: 12,
+      border: `1px solid ${C.borde}`,
+      width: '100%',
+      boxSizing: 'border-box',
+      fontSize: 16,
+    },
+    hr: { border: 0, borderTop: `1px solid ${C.borde}`, margin: '14px 0' },
+    small: { fontSize: 12, color: C.gris, fontWeight: 800 },
+    msg: { marginTop: 10, fontWeight: 900, color: C.negro },
+
+    btn: (variant = 'primary') => {
+      const isPrimary = variant === 'primary';
+      const isGhost = variant === 'ghost';
+      const bg = isPrimary ? C.rojo : isGhost ? C.blanco : C.negro;
+      const color = isPrimary ? C.blanco : isGhost ? C.negro : C.blanco;
+      const border = isPrimary ? C.rojo : C.borde;
+
+      return {
+        height: 52,
+        padding: '0 14px',
+        borderRadius: 16,
+        border: `1px solid ${border}`,
+        background: bg,
+        color,
+        fontWeight: 900,
+        cursor: 'pointer',
+        boxShadow: isPrimary ? '0 10px 20px rgba(179,0,0,.18)' : 'none',
+        fontSize: 15,
+      };
+    },
+    btnDisabled: { opacity: 0.45, cursor: 'not-allowed', boxShadow: 'none' },
+
+    bottomBar: {
+      position: 'fixed',
+      left: 0,
+      right: 0,
+      bottom: 0,
+      padding: '12px 14px',
+      paddingBottom: 'calc(12px + env(safe-area-inset-bottom))',
+      background: 'rgba(246,247,251,.92)',
+      backdropFilter: 'blur(10px)',
+      borderTop: `1px solid ${C.borde}`,
+    },
+    bottomInner: {
+      maxWidth: 480,
+      margin: '0 auto',
+      display: 'grid',
+      gridTemplateColumns: '1fr 1fr',
+      gap: 10,
+    },
+    bottomPrimary: {
+      height: 56,
+      borderRadius: 18,
+      fontSize: 16,
+      fontWeight: 900,
+      border: `1px solid ${C.rojo}`,
+      background: C.rojo,
+      color: C.blanco,
+      cursor: 'pointer',
+      boxShadow: '0 10px 20px rgba(179,0,0,.18)',
+    },
+    bottomSecondary: {
+      height: 56,
+      borderRadius: 18,
+      fontSize: 16,
+      fontWeight: 900,
+      border: `1px solid ${C.borde}`,
+      background: C.blanco,
+      color: C.negro,
+      cursor: 'pointer',
+    },
+
+    loginBox: {
+      marginTop: 12,
+      background: C.blanco,
+      border: `1px solid ${C.borde}`,
+      borderRadius: 18,
+      padding: 14,
+    },
+
+    link: {
+      marginTop: 10,
+      background: 'transparent',
+      border: 'none',
+      padding: 0,
+      color: C.rojo,
+      fontWeight: 900,
+      cursor: 'pointer',
+      textAlign: 'left',
+    },
+
+    employeePill: {
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 8,
+      padding: '8px 10px',
+      borderRadius: 999,
+      border: `1px solid ${C.borde}`,
+      background: C.blanco,
+      fontWeight: 900,
+      maxWidth: 260,
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
+    },
+
+    inspectorBanner: {
+      marginTop: 10,
+      background: 'rgba(255,255,255,.14)',
+      border: '1px dashed rgba(255,255,255,.35)',
+      borderRadius: 14,
+      padding: '8px 10px',
+      fontSize: 12,
+      fontWeight: 900,
+      textAlign: 'center',
+    },
+  };
+
+  const btnStyle = (disabled, variant) => ({
+    ...s.btn(variant),
+    ...(disabled ? s.btnDisabled : null),
+  });
+
+  /* =========================
+     Botón principal automático
+     ========================= */
+
+  const autoLabel =
+    !abiertoTrabajo && !abiertoPausa
+      ? 'Iniciar jornada'
+      : abiertoPausa
+      ? 'Reanudar'
+      : 'Iniciar pausa';
+
+  const autoDisabled = !estoyViendoMiEmpleado || busy || loadingPeriodo || esInspector;
+
+  const autoAction = async () => {
+    if (!abiertoTrabajo && !abiertoPausa) return entradaTrabajo();
+    if (abiertoPausa) return terminarPausa();
+    return iniciarPausa();
+  };
+
+  const finDisabled =
+    !estoyViendoMiEmpleado ||
+    busy ||
+    loadingPeriodo ||
+    !abiertoTrabajo ||
+    !!abiertoPausa ||
+    esInspector;
+
+  // Si inspector, forzamos tab HISTORICO
+  useEffect(() => {
+    if (session && esInspector && tab !== 'HISTORICO') setTab('HISTORICO');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, esInspector]);
 
   return (
-    <div style={styles.pagina}>
-      <div style={styles.shell}>
-        {/* CABECERA */}
-        <div style={styles.header}>
-          <div style={styles.marca}>
-            <div style={styles.nombreMarca}>Cañizares S.A.</div>
-            <div style={styles.brandSub}>Control horario</div>
+    <div style={s.page}>
+      <div style={s.shell}>
+        <div style={s.header}>
+          <div style={s.headerTop}>
+            <div style={s.brand}>
+              <div style={s.brandName}>{EMPRESA_NOMBRE_UI}</div>
+              <div style={s.brandSub}>Control horario</div>
+            </div>
+            <div style={s.datePill}>{`Hoy, ${fechaLarga}`}</div>
           </div>
 
-          <div style={styles.datePill}>{fechaLarga(now)}</div>
+          <div style={s.clock}>
+            <div style={s.clockLeft}>
+              <div style={{ fontSize: 12, opacity: 0.9, fontWeight: 800 }}>
+                Hora actual
+              </div>
+              <div style={s.clockBig}>{horaGrande}</div>
+            </div>
 
-          <div style={styles.reloj}>
-            <div style={{ fontWeight: 800 }}>Hora actual</div>
-            <div style={styles.clockBig}>{hora(now)}</div>
+            {session && (
+              <div style={s.statusPill}>
+                <div style={{ opacity: 0.9 }}>Estado</div>
+                <div style={{ marginTop: 4 }}>{estadoTexto}</div>
+              </div>
+            )}
           </div>
 
-          {haySesion && (
-            <>
-              <div style={styles.statusPill}>
-                <div>Estado</div>
-                <div style={styles.statusValue}>
-                  <span
-                    style={{
-                      width: 12,
-                      height: 12,
-                      borderRadius: 999,
-                      background: estado === "Dentro" ? "#00ff7f" : "#ddd",
-                      marginRight: 8,
-                    }}
-                  />
-                  {estado}
-                </div>
-              </div>
+          {session && esInspector && (
+            <div style={s.inspectorBanner}>🔎 MODO INSPECCIÓN — Solo lectura</div>
+          )}
 
-              <div style={styles.tabs}>
-                <button style={styles.tabActive}>Inicio</button>
-                <button style={styles.tab}>Histórico</button>
-              </div>
-            </>
+          {session && (
+            <div style={s.tabs}>
+              <button
+                style={s.tabBtn(tab === 'FICHAR')}
+                onClick={() => setTab('FICHAR')}
+                disabled={esInspector}
+                title={esInspector ? 'Inspección: solo histórico' : ''}
+              >
+                Inicio
+              </button>
+              <button
+                style={s.tabBtn(tab === 'HISTORICO')}
+                onClick={() => setTab('HISTORICO')}
+              >
+                Histórico
+              </button>
+            </div>
           )}
         </div>
 
-        {/* CONTENIDO */}
-        <div style={styles.card}>
-          {!haySesion && (
-            <>
-              <div style={styles.cardTitle}>Acceso</div>
-
+        {!session ? (
+          <div style={s.loginBox}>
+            <div style={{ fontWeight: 900, marginBottom: 10 }}>Acceso</div>
+            <div style={{ display: 'grid', gap: 10 }}>
               <input
-                style={styles.input}
+                style={s.input}
                 placeholder="Email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
               <input
-                style={styles.input}
+                style={s.input}
+                placeholder="Password"
                 type="password"
-                placeholder="Contraseña"
-                value={pass}
-                onChange={(e) => setPass(e.target.value)}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
               />
-
-              <button style={styles.btnMain} onClick={login}>
+              <button style={btnStyle(false, 'primary')} onClick={login}>
                 Entrar
               </button>
 
+              {/* LINKS QUE FALTABAN */}
               <button
-                style={styles.linkBtn}
-                onClick={() => setShowRecover(true)}
+                style={s.link}
+                onClick={() => {
+                  setResetEmail(email || '');
+                  setResetInfo('');
+                  setOpenReset(true);
+                }}
               >
                 ¿Has olvidado la contraseña?
               </button>
 
-              {msg && (
-                <div style={msg.type === "ok" ? styles.msgOk : styles.msgErr}>
-                  {msg.text}
-                </div>
-              )}
-            </>
-          )}
+              <button
+                style={s.link}
+                onClick={() => setOpenPrivacidad(true)}
+              >
+                Aviso de privacidad
+              </button>
 
-          {haySesion && (
-            <>
-              <div style={styles.userRow}>
-                <div style={styles.userPill}>
-                  👤 <b>{nombre}</b>
-                </div>
-
-                <button style={styles.btnOut} onClick={logout}>
-                  Salir
-                </button>
+              <div style={s.small}>{msg}</div>
+            </div>
+          </div>
+        ) : (
+          <div style={s.card}>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                gap: 10,
+                alignItems: 'center',
+              }}
+            >
+              <div style={s.employeePill}>
+                <span role="img" aria-label="user">
+                  👤
+                </span>
+                <span>{empleadoNombre || '(Sin nombre)'}</span>
               </div>
 
-              <div style={styles.hr} />
+              <button
+                style={btnStyle(busy || loadingPeriodo, 'ghost')}
+                onClick={logout}
+                disabled={busy || loadingPeriodo}
+              >
+                Salir
+              </button>
+            </div>
 
-              <div style={styles.label}>Nota</div>
-              <input
-                style={styles.input}
-                placeholder="(Opcional)"
-                value={nota}
-                onChange={(e) => setNota(e.target.value)}
-              />
+            <div style={s.hr} />
 
-              <div style={styles.msgOk}>✅ Sesión iniciada</div>
-
-              <div style={styles.sectionTitle}>Registro de hoy</div>
-
-              {registrosHoy.map((r) => (
-                <div key={r.id} style={styles.listRow}>
-                  <b>Trabajo</b>
-                  <div>
-                    {r.fecha} — {r.entrada} → {r.salida || "--"}
+            {(esAdmin || esInspector) && (
+              <>
+                <div style={{ ...s.row, justifyContent: 'space-between' }}>
+                  <div style={s.row}>
+                    <div style={s.label}>Empleado</div>
+                    <select
+                      style={s.select}
+                      value={empleadoSel}
+                      onChange={(e) => setEmpleadoSel(e.target.value)}
+                      disabled={busy || loadingPeriodo}
+                    >
+                      {esInspector && (
+                        <option value="">(Selecciona empleado)</option>
+                      )}
+                      {empleados.map((em) => (
+                        <option key={em.id} value={em.id}>
+                          {em.nombre}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      style={btnStyle(busy || loadingPeriodo, 'ghost')}
+                      onClick={async () => {
+                        if (esInspector && !empleadoSel) {
+                          setMsg('⚠️ Selecciona un empleado');
+                          return;
+                        }
+                        if (!esInspector) await cargarEstadoDia();
+                        await cargarPeriodo(modo, fechaSel, fechaDesde, fechaHasta);
+                      }}
+                      disabled={busy || loadingPeriodo}
+                    >
+                      Ver
+                    </button>
                   </div>
                 </div>
-              ))}
-            </>
-          )}
-        </div>
+
+                <div style={s.hr} />
+              </>
+            )}
+
+            {tab === 'FICHAR' && !esInspector ? (
+              <div style={{ display: 'grid', gap: 12 }}>
+                <div>
+                  <div style={s.label}>Nota</div>
+                  <input
+                    style={s.input}
+                    placeholder="(Opcional) Se guardará en el próximo fichaje"
+                    value={nota}
+                    onChange={(e) => setNota(e.target.value)}
+                    disabled={!estoyViendoMiEmpleado || busy || loadingPeriodo}
+                  />
+                  <div style={{ ...s.small, marginTop: 6 }}>
+                    Ej.: motivo de ausencia, detalle del día, etc.
+                  </div>
+                </div>
+
+                <div style={s.msg}>{msg}</div>
+
+                <div style={s.hr} />
+
+                <div>
+                  <div style={{ fontWeight: 900, marginBottom: 8 }}>
+                    Registro de hoy
+                  </div>
+
+                  {hoy.length === 0 ? (
+                    <div style={s.small}>(Sin registros hoy)</div>
+                  ) : (
+                    <ul style={{ margin: 0, paddingLeft: 18 }}>
+                      {hoy.map((r) => (
+                        <li key={r.id} style={{ margin: '8px 0', lineHeight: 1.25 }}>
+                          <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b> —
+                          Salida: <b>{r.salida ?? '-'}</b>
+                          {r.nota ? ` — Nota: ${r.nota}` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  <div style={{ marginTop: 10, fontWeight: 900 }}>
+                    Total neto de hoy:{' '}
+                    <span style={{ color: C.rojo }}>{totalHoyHHMM}</span> h
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: 10 }}>
+                {esInspector && !empleadoObjetivoId ? (
+                  <div style={s.small}>
+                    🔎 Selecciona un empleado para ver su histórico.
+                  </div>
+                ) : (
+                  <>
+                    <div style={s.row}>
+                      <div style={s.label}>Periodo</div>
+                      <button
+                        style={btnStyle(modo === 'DIA' || loadingPeriodo, 'ghost')}
+                        onClick={() => setModo('DIA')}
+                        disabled={modo === 'DIA' || loadingPeriodo}
+                      >
+                        Día
+                      </button>
+                      <button
+                        style={btnStyle(modo === 'SEMANA' || loadingPeriodo, 'ghost')}
+                        onClick={() => setModo('SEMANA')}
+                        disabled={modo === 'SEMANA' || loadingPeriodo}
+                      >
+                        Semana
+                      </button>
+                      <button
+                        style={btnStyle(modo === 'MES' || loadingPeriodo, 'ghost')}
+                        onClick={() => setModo('MES')}
+                        disabled={modo === 'MES' || loadingPeriodo}
+                      >
+                        Mes
+                      </button>
+                      <button
+                        style={btnStyle(modo === 'RANGO' || loadingPeriodo, 'ghost')}
+                        onClick={() => setModo('RANGO')}
+                        disabled={modo === 'RANGO' || loadingPeriodo}
+                      >
+                        Rango
+                      </button>
+                    </div>
+
+                    {modo !== 'RANGO' ? (
+                      <div style={s.row}>
+                        <div style={s.label}>Fecha</div>
+                        <input
+                          type="date"
+                          value={fechaSel}
+                          onChange={(e) => setFechaSel(e.target.value)}
+                          disabled={loadingPeriodo}
+                          style={{ ...s.input, maxWidth: 220 }}
+                        />
+                        <button
+                          style={btnStyle(loadingPeriodo, 'ghost')}
+                          onClick={() => setFechaSel(fechaLocalYYYYMMDD())}
+                          disabled={loadingPeriodo}
+                        >
+                          Hoy
+                        </button>
+
+                        <button
+                          style={btnStyle(loadingPeriodo, 'primary')}
+                          onClick={() =>
+                            exportarXLSX({
+                              empresaNombre: EMPRESA_NOMBRE_EXCEL,
+                              empleadoNombre: empleadoNombre,
+                              modo,
+                              fechaSel,
+                              fechaDesde,
+                              fechaHasta,
+                              registrosPeriodo,
+                              totalPeriodoHHMM,
+                            })
+                          }
+                          disabled={loadingPeriodo || (esInspector && !empleadoObjetivoId)}
+                        >
+                          Exportar Excel
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={s.row}>
+                        <div style={s.label}>Desde</div>
+                        <input
+                          type="date"
+                          value={fechaDesde}
+                          onChange={(e) => setFechaDesde(e.target.value)}
+                          disabled={loadingPeriodo}
+                          style={{ ...s.input, maxWidth: 220 }}
+                        />
+                        <div style={s.label}>Hasta</div>
+                        <input
+                          type="date"
+                          value={fechaHasta}
+                          onChange={(e) => setFechaHasta(e.target.value)}
+                          disabled={loadingPeriodo}
+                          style={{ ...s.input, maxWidth: 220 }}
+                        />
+                        <button
+                          style={btnStyle(loadingPeriodo, 'ghost')}
+                          onClick={() => {
+                            const h = fechaLocalYYYYMMDD();
+                            setFechaDesde(h);
+                            setFechaHasta(h);
+                          }}
+                          disabled={loadingPeriodo}
+                        >
+                          Hoy
+                        </button>
+
+                        <button
+                          style={btnStyle(loadingPeriodo, 'primary')}
+                          onClick={() =>
+                            exportarXLSX({
+                              empresaNombre: EMPRESA_NOMBRE_EXCEL,
+                              empleadoNombre: empleadoNombre,
+                              modo,
+                              fechaSel,
+                              fechaDesde,
+                              fechaHasta,
+                              registrosPeriodo,
+                              totalPeriodoHHMM,
+                            })
+                          }
+                          disabled={loadingPeriodo || (esInspector && !empleadoObjetivoId)}
+                        >
+                          Exportar Excel
+                        </button>
+                      </div>
+                    )}
+
+                    <div style={s.small}>
+                      <b>
+                        Total{' '}
+                        {modo === 'DIA'
+                          ? 'del día'
+                          : modo === 'SEMANA'
+                          ? 'semanal'
+                          : modo === 'MES'
+                          ? 'mensual'
+                          : 'del rango'}{' '}
+                        (neto):
+                      </b>{' '}
+                      {loadingPeriodo ? 'Cargando...' : `${totalPeriodoHHMM} horas`}
+                    </div>
+
+                    <div style={s.msg}>{msg}</div>
+
+                    <div style={s.hr} />
+
+                    {loadingPeriodo ? (
+                      <div style={s.small}>Cargando...</div>
+                    ) : modo === 'DIA' ? (
+                      registrosPeriodo.length === 0 ? (
+                        <div style={s.small}>(Sin registros ese día)</div>
+                      ) : (
+                        <ul style={{ margin: 0, paddingLeft: 18 }}>
+                          {registrosPeriodo.map((r) => (
+                            <li key={r.id} style={{ margin: '8px 0', lineHeight: 1.25 }}>
+                              <b>{formatearFechaDDMMYYYY(r.fecha)}</b> —{' '}
+                              <b>{r.tipo}</b> — Entrada: <b>{r.entrada ?? '-'}</b>{' '}
+                              — Salida: <b>{r.salida ?? '-'}</b>
+                              {r.nota ? ` — Nota: ${r.nota}` : ''}
+                            </li>
+                          ))}
+                        </ul>
+                      )
+                    ) : gruposPeriodo.length === 0 ? (
+                      <div style={s.small}>(Sin registros en el periodo)</div>
+                    ) : (
+                      <>
+                        {gruposPeriodo.map((g) => (
+                          <div key={g.fecha} style={{ marginBottom: 12 }}>
+                            <div style={{ fontWeight: 900 }}>
+                              {formatearFechaDDMMYYYY(g.fecha)} — Total neto:{' '}
+                              <span style={{ color: C.rojo }}>
+                                {minutesToHHMM(g.totalMin)}
+                              </span>{' '}
+                              h
+                            </div>
+                            <ul style={{ margin: 0, paddingLeft: 18, marginTop: 6 }}>
+                              {g.items.map((r) => (
+                                <li key={r.id} style={{ margin: '8px 0', lineHeight: 1.25 }}>
+                                  {r.tipo} — Entrada: <b>{r.entrada ?? '-'}</b> —{' '}
+                                  Salida: <b>{r.salida ?? '-'}</b>
+                                  {r.nota ? ` — Nota: ${r.nota}` : ''}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ))}
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* RECUPERAR PASSWORD */}
-      {showRecover && (
-        <Modal title="Recuperar contraseña" onClose={() => setShowRecover(false)}>
-          <input
-            style={styles.input}
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
+      {/* Barra inferior sticky */}
+      {session && tab === 'FICHAR' && !esInspector && (
+        <div style={s.bottomBar}>
+          <div style={s.bottomInner}>
+            <button
+              style={{
+                ...s.bottomPrimary,
+                ...(!autoDisabled ? null : s.btnDisabled),
+              }}
+              disabled={autoDisabled}
+              onClick={autoAction}
+            >
+              {autoLabel}
+            </button>
 
-          <button style={styles.btnMain} onClick={sendRecovery}>
-            Enviar enlace
-          </button>
-        </Modal>
+            <button
+              style={{
+                ...s.bottomSecondary,
+                ...(!finDisabled ? null : s.btnDisabled),
+              }}
+              disabled={finDisabled}
+              onClick={salidaTrabajo}
+            >
+              Finalizar jornada
+            </button>
+          </div>
+        </div>
       )}
 
-      {/* RESET PASSWORD */}
-      {recoveryMode && (
-        <Modal title="Restablecer contraseña" onClose={() => setRecoveryMode(false)}>
+      {/* MODAL: Enviar reset */}
+      <Modal
+        open={openReset}
+        title="Recuperar contraseña"
+        onClose={() => setOpenReset(false)}
+      >
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ fontSize: 13, color: '#374151', fontWeight: 700 }}>
+            Te enviaremos un email con un enlace para restablecer la contraseña.
+          </div>
           <input
-            style={styles.input}
+            style={{
+              padding: '12px 12px',
+              borderRadius: 12,
+              border: '1px solid #e5e7eb',
+              width: '100%',
+              boxSizing: 'border-box',
+              fontSize: 16,
+            }}
+            placeholder="Email"
+            value={resetEmail}
+            onChange={(e) => setResetEmail(e.target.value)}
+          />
+          <button
+            style={{
+              height: 52,
+              borderRadius: 16,
+              border: '1px solid #b30000',
+              background: '#b30000',
+              color: '#fff',
+              fontWeight: 900,
+              cursor: 'pointer',
+            }}
+            onClick={enviarReset}
+          >
+            Enviar enlace
+          </button>
+          {resetInfo ? (
+            <div style={{ fontWeight: 900, color: '#111827' }}>{resetInfo}</div>
+          ) : null}
+        </div>
+      </Modal>
+
+      {/* MODAL: Nueva contraseña */}
+      <Modal
+        open={openSetNewPassword}
+        title="Restablecer contraseña"
+        onClose={() => setOpenSetNewPassword(false)}
+      >
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ fontSize: 13, color: '#374151', fontWeight: 700 }}>
+            Introduce una nueva contraseña (mínimo 6 caracteres).
+          </div>
+          <input
+            style={{
+              padding: '12px 12px',
+              borderRadius: 12,
+              border: '1px solid #e5e7eb',
+              width: '100%',
+              boxSizing: 'border-box',
+              fontSize: 16,
+            }}
             placeholder="Nueva contraseña"
             type="password"
             value={newPass1}
             onChange={(e) => setNewPass1(e.target.value)}
           />
           <input
-            style={styles.input}
-            placeholder="Repetir contraseña"
+            style={{
+              padding: '12px 12px',
+              borderRadius: 12,
+              border: '1px solid #e5e7eb',
+              width: '100%',
+              boxSizing: 'border-box',
+              fontSize: 16,
+            }}
+            placeholder="Repite la contraseña"
             type="password"
             value={newPass2}
             onChange={(e) => setNewPass2(e.target.value)}
           />
-          <button style={styles.btnMain} onClick={saveNewPassword}>
+
+          <button
+            style={{
+              height: 52,
+              borderRadius: 16,
+              border: '1px solid #b30000',
+              background: '#b30000',
+              color: '#fff',
+              fontWeight: 900,
+              cursor: 'pointer',
+            }}
+            onClick={guardarNuevaContrasena}
+          >
             Guardar contraseña
           </button>
-        </Modal>
-      )}
-    </div>
-  );
-}
 
-/* ===================== MODAL ===================== */
-
-function Modal({ title, children, onClose }) {
-  return (
-    <div style={styles.modalOverlay} onClick={onClose}>
-      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={styles.modalHeader}>
-          <div style={styles.modalTitle}>{title}</div>
-          <button style={styles.modalClose} onClick={onClose}>
-            Cerrar
-          </button>
+          {setPassInfo ? (
+            <div style={{ fontWeight: 900, color: '#111827' }}>{setPassInfo}</div>
+          ) : null}
         </div>
-        {children}
-      </div>
+      </Modal>
+
+      {/* MODAL: Privacidad */}
+      <Modal
+        open={openPrivacidad}
+        title="Aviso de privacidad"
+        onClose={() => setOpenPrivacidad(false)}
+      >
+        <div style={{ display: 'grid', gap: 10, fontSize: 13, color: '#111827' }}>
+          <div style={{ fontWeight: 900 }}>
+            Responsable del tratamiento
+          </div>
+          <div>
+            <b>Cañizares, Instalaciones y Proyectos, S.A.</b><br />
+            CIF: <b>A78593316</b><br />
+            Calle Islas Cíes 35, 28035 Madrid<br />
+            Email: <b>canizares@jcanizares.com</b>
+          </div>
+
+          <div style={{ fontWeight: 900, marginTop: 6 }}>Finalidad</div>
+          <div>
+            Gestión del <b>registro de jornada</b> y control horario del personal.
+          </div>
+
+          <div style={{ fontWeight: 900, marginTop: 6 }}>Base jurídica</div>
+          <div>
+            Cumplimiento de obligaciones legales en materia laboral y ejecución de la relación laboral.
+          </div>
+
+          <div style={{ fontWeight: 900, marginTop: 6 }}>Datos tratados</div>
+          <div>
+            Identificación del usuario, fichajes (fecha, hora de entrada/salida, tipo) y <b>nota</b> asociada al fichaje.
+          </div>
+
+          <div style={{ fontWeight: 900, marginTop: 6 }}>Conservación</div>
+          <div>
+            Los datos se conservarán durante el plazo legal aplicable al registro de jornada y, en su caso, durante los plazos de prescripción de responsabilidades.
+          </div>
+
+          <div style={{ fontWeight: 900, marginTop: 6 }}>Destinatarios</div>
+          <div>
+            No se cederán datos a terceros salvo obligación legal. Podrán acceder personal autorizado y, en su caso, autoridades competentes (p. ej. Inspección de Trabajo).
+          </div>
+
+          <div style={{ fontWeight: 900, marginTop: 6 }}>Derechos</div>
+          <div>
+            Puedes ejercer tus derechos de acceso, rectificación, supresión, limitación y otros derechos reconocidos, contactando con <b>canizares@jcanizares.com</b>.
+          </div>
+
+          <div style={{ fontSize: 12, color: '#6b7280', fontWeight: 800, marginTop: 6 }}>
+            *Este aviso es un texto base. Si queréis, lo dejo aún más “legal” (RGPD/LOPDGDD) y lo adaptamos a vuestro procedimiento interno.
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
-
-/* ===================== ESTILOS ===================== */
-
-const styles = {
-  pagina: { minHeight: "100vh", background: "#f2f3f6", padding: 12 },
-  shell: { maxWidth: 520, margin: "0 auto" },
-
-  header: {
-    background: "#b30000",
-    color: "white",
-    padding: 22,
-    borderRadius: 28,
-  },
-
-  marca: { marginBottom: 8 },
-  nombreMarca: { fontSize: 40, fontWeight: 900 },
-  brandSub: { fontSize: 20 },
-
-  datePill: {
-    background: "rgba(255,255,255,0.15)",
-    padding: 10,
-    borderRadius: 20,
-    marginTop: 10,
-  },
-
-  reloj: { marginTop: 10 },
-  clockBig: { fontSize: 52, fontWeight: 900 },
-
-  statusPill: {
-    marginTop: 12,
-    padding: 12,
-    borderRadius: 16,
-    background: "rgba(255,255,255,0.15)",
-    display: "flex",
-    justifyContent: "space-between",
-  },
-
-  statusValue: { display: "flex", alignItems: "center", fontWeight: 800 },
-
-  tabs: { display: "flex", gap: 12, marginTop: 12 },
-  tab: {
-    flex: 1,
-    padding: 14,
-    borderRadius: 18,
-    border: "2px solid rgba(255,255,255,0.3)",
-    background: "transparent",
-    color: "white",
-  },
-  tabActive: {
-    flex: 1,
-    padding: 14,
-    borderRadius: 18,
-    background: "white",
-    fontWeight: 900,
-  },
-
-  card: {
-    marginTop: 16,
-    background: "white",
-    padding: 18,
-    borderRadius: 28,
-  },
-
-  cardTitle: { fontSize: 28, fontWeight: 900 },
-
-  input: {
-    width: "100%",
-    padding: 14,
-    borderRadius: 16,
-    border: "2px solid #ddd",
-    marginTop: 12,
-  },
-
-  btnMain: {
-    width: "100%",
-    padding: 16,
-    marginTop: 14,
-    background: "#b30000",
-    color: "white",
-    fontWeight: 900,
-    borderRadius: 20,
-    border: "none",
-  },
-
-  linkBtn: {
-    background: "none",
-    border: "none",
-    color: "#b30000",
-    fontWeight: 900,
-    marginTop: 10,
-  },
-
-  msgOk: {
-    marginTop: 10,
-    padding: 12,
-    background: "#e6f9ee",
-    borderRadius: 12,
-    fontWeight: 900,
-  },
-
-  msgErr: {
-    marginTop: 10,
-    padding: 12,
-    background: "#fde8e8",
-    borderRadius: 12,
-    fontWeight: 900,
-  },
-
-  userRow: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: 12,
-    alignItems: "center",
-  },
-
-  userPill: {
-    flex: "1 1 260px",
-    padding: 12,
-    borderRadius: 999,
-    border: "2px solid #eee",
-    fontWeight: 900,
-  },
-
-  btnOut: {
-    width: "100%",
-    padding: 12,
-    borderRadius: 18,
-    border: "2px solid #ddd",
-    fontWeight: 900,
-    background: "white",
-  },
-
-  hr: { height: 1, background: "#eee", margin: "16px 0" },
-
-  sectionTitle: { fontSize: 22, fontWeight: 900 },
-
-  listRow: {
-    border: "2px solid #eee",
-    borderRadius: 16,
-    padding: 12,
-    marginTop: 8,
-  },
-
-  modalOverlay: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(0,0,0,.4)",
-    display: "flex",
-    alignItems: "flex-end",
-    justifyContent: "center",
-    padding: 12,
-    zIndex: 9999,
-  },
-
-  modal: {
-    width: "100%",
-    maxWidth: 500,
-    background: "white",
-    borderRadius: 20,
-    padding: 16,
-  },
-
-  modalHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    marginBottom: 10,
-  },
-
-  modalTitle: { fontSize: 24, fontWeight: 900 },
-
-  modalClose: {
-    border: "none",
-    background: "transparent",
-    fontWeight: 900,
-    color: "#2563eb",
-  },
-};
