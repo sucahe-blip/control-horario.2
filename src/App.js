@@ -1,19 +1,25 @@
+// App.js
 import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "./supabase";
 import "./style.css";
 
 /**
  * Control horario (Cañizares)
- * Adaptado a tu BD real:
- * - empleados: id, nombre, rol
- * - registros: id, empleado_id, fecha (date), tipo (text), entrada (time), salida (time)
+ * ESQUEMA REAL (según tus capturas):
+ *  - public.empleados: id (uuid), nombre (text), rol (text)
+ *  - public.usuarios:  user_id (uuid), empleado_id (uuid), rol (text), es_admin (bool), es_inspector (bool)
+ *  - public.registros: id (uuid), empleado_id (uuid), fecha (date), tipo (text), entrada (time), salida (time), nota (text)
  *
- * Funciona como “un registro por día”:
- * - Iniciar jornada => crea (o actualiza) fila del día con entrada = hora actual, salida = null
- * - Finalizar jornada => actualiza salida = hora actual
- *
- * NOTA: en este esquema NO hay pausas (no hay columnas para ello).
- *       Si quieres pausas, habría que ampliar tabla o hacer tabla aparte.
+ * FUNCIONES:
+ *  - Login / Logout
+ *  - Recuperar contraseña (email)
+ *  - Reset contraseña desde link (Supabase) con modal:
+ *      - si cierras sin guardar => signOut() para evitar entrar sin cambiar
+ *  - Aviso de privacidad (modal) SIN texto “orientativo”
+ *  - Jornada partida: se usa FIN de jornada y luego INICIAR otra jornada (NO pausas)
+ *  - Nota: se guarda y se muestra (en inicio/histórico/inspector)
+ *  - Histórico con filtro Desde/Hasta
+ *  - Admin/Inspector: selector empleado (Todos / uno) + histórico por rango + export CSV
  */
 
 const EMPRESA = {
@@ -23,27 +29,12 @@ const EMPRESA = {
   email: "canizares@jcanizares.com",
 };
 
-// Columnas reales en tu BD:
-const REG_FECHA_COL = "fecha"; // date
-const REG_ENTRADA_COL = "entrada"; // time
-const REG_SALIDA_COL = "salida"; // time
-const REG_TIPO_COL = "tipo"; // text
-
 function pad2(n) {
   return String(n).padStart(2, "0");
 }
 
 function fmtHora(d) {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
-}
-
-function fmtHoraSinSeg(d) {
-  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-}
-
-function todayYMD() {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
 function fmtFechaLarga(d) {
@@ -63,6 +54,19 @@ function fmtFechaLarga(d) {
     "diciembre",
   ];
   return `Hoy, ${dias[d.getDay()]}, ${d.getDate()} de ${meses[d.getMonth()]} de ${d.getFullYear()}`;
+}
+
+function hoyYYYYMMDD() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = pad2(d.getMonth() + 1);
+  const day = pad2(d.getDate());
+  return `${y}-${m}-${day}`;
+}
+
+function horaHHMMSS() {
+  const d = new Date();
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
 function toInputDate(d) {
@@ -91,46 +95,55 @@ function downloadCSV(filename, rows) {
   URL.revokeObjectURL(url);
 }
 
-function estadoPorRegistroHoy(regHoy) {
-  // regHoy: fila de hoy (o null)
-  if (!regHoy) return { estado: "Fuera", dentro: false };
-  if (regHoy[REG_ENTRADA_COL] && !regHoy[REG_SALIDA_COL]) return { estado: "Dentro", dentro: true };
-  return { estado: "Fuera", dentro: false };
+function tipoBonito(tipo) {
+  const t = (tipo || "").toLowerCase();
+  if (t.includes("inicio")) return "Inicio jornada";
+  if (t.includes("fin")) return "Fin jornada";
+  if (t === "trabajo") return "Trabajo";
+  return tipo || "-";
+}
+
+function estadoDesdeRegistrosHoy(registrosHoy) {
+  // Estado simple para jornada partida:
+  // - Dentro: hay un registro hoy con salida null
+  // - Fuera: no hay registro abierto
+  const abierto = (registrosHoy || []).some((r) => r.salida == null);
+  return abierto ? "Dentro" : "Fuera";
 }
 
 export default function App() {
   const [ahora, setAhora] = useState(new Date());
 
+  // Auth
   const [session, setSession] = useState(null);
   const [cargandoSesion, setCargandoSesion] = useState(true);
-
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
 
   const [msg, setMsg] = useState(null); // {type:'ok'|'err', text:''}
 
-  // Perfil
-  const [perfil, setPerfil] = useState(null); // row de usuarios (si existe)
+  // Perfil/roles
+  const [perfil, setPerfil] = useState(null); // row de usuarios
   const [empleado, setEmpleado] = useState(null); // row de empleados
   const [rol, setRol] = useState("empleado"); // empleado | admin | inspector
-
   const isInspector = rol === "inspector";
   const isAdmin = rol === "admin";
 
   // Tabs
-  const [tab, setTab] = useState("inicio");
+  const [tab, setTab] = useState("inicio"); // inicio | historico
 
-  // Registro hoy (1 fila)
-  const [registroHoy, setRegistroHoy] = useState(null);
+  // Registros (usuario actual)
+  const [registrosHoy, setRegistrosHoy] = useState([]);
+  const [registrosRango, setRegistrosRango] = useState([]);
+  const [nota, setNota] = useState("");
 
-  // Histórico (propio)
+  // Filtros rango (usuario e inspector/admin)
   const [desde, setDesde] = useState(toInputDate(new Date()));
   const [hasta, setHasta] = useState(toInputDate(new Date()));
-  const [registrosRango, setRegistrosRango] = useState([]);
 
   // Inspector/admin
   const [empleados, setEmpleados] = useState([]);
-  const [empleadoSel, setEmpleadoSel] = useState(""); // "" = todos
+  const [empleadoSel, setEmpleadoSel] = useState(""); // "" => todos
   const [registrosInspector, setRegistrosInspector] = useState([]);
   const [cargandoInspector, setCargandoInspector] = useState(false);
 
@@ -138,17 +151,18 @@ export default function App() {
   const [showPrivacidad, setShowPrivacidad] = useState(false);
   const [showRecover, setShowRecover] = useState(false);
 
+  // Recovery reset password
   const [recoveryMode, setRecoveryMode] = useState(false);
   const [newPass1, setNewPass1] = useState("");
   const [newPass2, setNewPass2] = useState("");
 
-  // reloj
+  // Tick reloj
   useEffect(() => {
     const id = setInterval(() => setAhora(new Date()), 1000);
     return () => clearInterval(id);
   }, []);
 
-  // Detectar link de recovery
+  // Detectar link de recovery en URL
   useEffect(() => {
     const hash = window.location.hash || "";
     const isRecovery =
@@ -156,6 +170,7 @@ export default function App() {
       hash.includes("type=magiclink") ||
       hash.includes("access_token=") ||
       hash.includes("code=");
+
     if (isRecovery) setRecoveryMode(true);
   }, []);
 
@@ -163,12 +178,13 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
 
-    (async () => {
+    async function init() {
       const { data } = await supabase.auth.getSession();
       if (!mounted) return;
       setSession(data.session || null);
       setCargandoSesion(false);
-    })();
+    }
+    init();
 
     const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
       setSession(newSession || null);
@@ -181,120 +197,104 @@ export default function App() {
     };
   }, []);
 
-  // Cargar perfil (usuarios) y empleado
+  // Cargar perfil al tener sesión
   useEffect(() => {
-    (async () => {
+    async function cargarPerfil() {
       setPerfil(null);
       setEmpleado(null);
       setRol("empleado");
 
       if (!session?.user?.id) return;
 
-      // 1) Intentar leer tabla usuarios (si existe)
-      const { data: u, error: eU } = await supabase
+      const { data: u, error: e1 } = await supabase
         .from("usuarios")
         .select("user_id, empleado_id, rol, es_admin, es_inspector")
         .eq("user_id", session.user.id)
         .maybeSingle();
 
-      if (eU && !String(eU.message || "").toLowerCase().includes("relation")) {
-        setMsg({ type: "err", text: `Error cargando usuarios: ${eU.message}` });
-      }
-
-      if (u) {
-        setPerfil(u);
-
-        const r =
-          (u?.rol && String(u.rol).toLowerCase()) ||
-          (u?.es_inspector ? "inspector" : u?.es_admin ? "admin" : "empleado");
-        setRol(r === "admin" ? "admin" : r === "inspector" ? "inspector" : "empleado");
-
-        if (u?.empleado_id) {
-          const { data: emp, error: eEmp } = await supabase
-            .from("empleados")
-            .select("*")
-            .eq("id", u.empleado_id)
-            .maybeSingle();
-          if (eEmp) {
-            setMsg({ type: "err", text: `Error cargando empleado: ${eEmp.message}` });
-          } else {
-            setEmpleado(emp || null);
-            // Si en empleados tienes rol, por si acaso:
-            if (emp?.rol && !u?.rol) {
-              const rr = String(emp.rol).toLowerCase();
-              setRol(rr === "admin" ? "admin" : rr === "inspector" ? "inspector" : "empleado");
-            }
-          }
-        }
+      if (e1) {
+        setMsg({ type: "err", text: `Error cargando usuario: ${e1.message}` });
         return;
       }
 
-      // 2) Si no hay tabla usuarios o no tiene fila:
-      //    intentamos emparejar por email en empleados (si tuvieras email) -> pero NO tienes.
-      //    En tu caso es normal que dependas de usuarios.empleado_id.
-      //    Si no existe, dejamos el nombre como (Sin nombre).
-    })();
+      setPerfil(u || null);
+
+      const r =
+        (u?.rol && String(u.rol).toLowerCase()) ||
+        (u?.es_inspector ? "inspector" : u?.es_admin ? "admin" : "empleado");
+      setRol(r === "inspector" ? "inspector" : r === "admin" ? "admin" : "empleado");
+
+      if (u?.empleado_id) {
+        const { data: emp, error: e2 } = await supabase
+          .from("empleados")
+          .select("*")
+          .eq("id", u.empleado_id)
+          .maybeSingle();
+        if (e2) return;
+        setEmpleado(emp || null);
+      }
+    }
+
+    cargarPerfil();
   }, [session?.user?.id]);
 
-  // Cargar registro de HOY (1 fila) del empleado
+  // Cargar registros de HOY (fecha = hoy)
   useEffect(() => {
-    (async () => {
-      setRegistroHoy(null);
-
-      const empleadoId = perfil?.empleado_id;
-      if (!session?.user?.id || !empleadoId) return;
-
-      const hoy = todayYMD();
+    async function cargarHoy() {
+      setRegistrosHoy([]);
+      if (!perfil?.empleado_id) return;
 
       const { data, error } = await supabase
         .from("registros")
         .select("*")
-        .eq("empleado_id", empleadoId)
-        .eq(REG_FECHA_COL, hoy)
-        .maybeSingle();
+        .eq("empleado_id", perfil.empleado_id)
+        .eq("fecha", hoyYYYYMMDD())
+        .order("entrada", { ascending: false });
 
       if (error) {
         setMsg({ type: "err", text: `Error cargando registros de hoy: ${error.message}` });
         return;
       }
+      setRegistrosHoy(data || []);
+    }
 
-      setRegistroHoy(data || null);
-    })();
-  }, [session?.user?.id, perfil?.empleado_id]);
+    cargarHoy();
+  }, [perfil?.empleado_id]);
 
-  // Histórico propio
+  // Histórico usuario (solo propio)
   useEffect(() => {
-    (async () => {
+    async function cargarRangoUsuario() {
       setRegistrosRango([]);
       if (tab !== "historico") return;
-
-      const empleadoId = perfil?.empleado_id;
-      if (!session?.user?.id || !empleadoId) return;
+      if (!perfil?.empleado_id) return;
 
       const { data, error } = await supabase
         .from("registros")
         .select("*")
-        .eq("empleado_id", empleadoId)
-        .gte(REG_FECHA_COL, desde)
-        .lte(REG_FECHA_COL, hasta)
-        .order(REG_FECHA_COL, { ascending: false });
+        .eq("empleado_id", perfil.empleado_id)
+        .gte("fecha", desde)
+        .lte("fecha", hasta)
+        .order("fecha", { ascending: false })
+        .order("entrada", { ascending: false });
 
       if (error) {
         setMsg({ type: "err", text: `Error cargando histórico: ${error.message}` });
         return;
       }
-
       setRegistrosRango(data || []);
-    })();
-  }, [tab, session?.user?.id, perfil?.empleado_id, desde, hasta]);
+    }
 
-  // Inspector/admin: cargar lista empleados (solo nombre)
+    cargarRangoUsuario();
+  }, [tab, perfil?.empleado_id, desde, hasta]);
+
+  // Inspector/Admin: cargar lista empleados
   useEffect(() => {
-    (async () => {
+    async function cargarEmpleados() {
       setEmpleados([]);
       if (!session?.user?.id) return;
       if (!(isInspector || isAdmin)) return;
 
+      // OJO: en tu tabla NO existe apellidos
       const { data, error } = await supabase.from("empleados").select("*").order("nombre", {
         ascending: true,
       });
@@ -304,9 +304,12 @@ export default function App() {
         return;
       }
       setEmpleados(data || []);
-    })();
+    }
+
+    cargarEmpleados();
   }, [session?.user?.id, isInspector, isAdmin]);
 
+  // Inspector/Admin: cargar registros por rango y empleado
   async function cargarInspector() {
     if (!(isInspector || isAdmin)) return;
     setCargandoInspector(true);
@@ -315,14 +318,14 @@ export default function App() {
     let q = supabase
       .from("registros")
       .select("*")
-      .gte(REG_FECHA_COL, desde)
-      .lte(REG_FECHA_COL, hasta)
-      .order(REG_FECHA_COL, { ascending: false });
+      .gte("fecha", desde)
+      .lte("fecha", hasta)
+      .order("fecha", { ascending: false })
+      .order("entrada", { ascending: false });
 
     if (empleadoSel) q = q.eq("empleado_id", empleadoSel);
 
     const { data, error } = await q;
-
     setCargandoInspector(false);
 
     if (error) {
@@ -332,132 +335,87 @@ export default function App() {
     setRegistrosInspector(data || []);
   }
 
-  const haySesion = !!session?.user?.id;
-  const fechaLarga = useMemo(() => fmtFechaLarga(ahora), [ahora]);
-  const horaGrande = useMemo(() => fmtHora(ahora), [ahora]);
-
-  const nombreVisible = useMemo(() => {
-    return (empleado?.nombre || "").trim() || "(Sin nombre)";
-  }, [empleado?.nombre]);
-
-  const estadoHoy = useMemo(() => estadoPorRegistroHoy(registroHoy), [registroHoy]);
-
-  // ---- Fichajes (según tu esquema entrada/salida) ----
+  // Helpers: refrescar hoy
   async function refrescarHoy() {
-    const empleadoId = perfil?.empleado_id;
-    if (!empleadoId) return;
-    const hoy = todayYMD();
-
+    if (!perfil?.empleado_id) return;
     const { data } = await supabase
       .from("registros")
       .select("*")
-      .eq("empleado_id", empleadoId)
-      .eq(REG_FECHA_COL, hoy)
-      .maybeSingle();
+      .eq("empleado_id", perfil.empleado_id)
+      .eq("fecha", hoyYYYYMMDD())
+      .order("entrada", { ascending: false });
 
-    setRegistroHoy(data || null);
+    setRegistrosHoy(data || []);
   }
 
+  // Iniciar jornada (crea un registro abierto)
   async function iniciarJornada() {
     setMsg(null);
+    if (!perfil?.empleado_id) return;
 
-    const empleadoId = perfil?.empleado_id;
-    if (!haySesion || !empleadoId) {
-      setMsg({ type: "err", text: "No hay sesión activa o empleado asociado." });
-      return;
-    }
-
-    if (estadoHoy.dentro) {
-      setMsg({ type: "err", text: "Ya tienes una jornada iniciada (salida vacía)." });
-      return;
-    }
-
-    const hoy = todayYMD();
-    const entrada = fmtHoraSinSeg(new Date());
-
-    // Si ya existe fila de hoy, actualizamos entrada y borramos salida
-    // Si no existe, insertamos
-    const { data: existing, error: e1 } = await supabase
+    // no permitir otra abierta
+    const { data: abiertas, error: e0 } = await supabase
       .from("registros")
       .select("id")
-      .eq("empleado_id", empleadoId)
-      .eq(REG_FECHA_COL, hoy)
-      .maybeSingle();
+      .eq("empleado_id", perfil.empleado_id)
+      .eq("fecha", hoyYYYYMMDD())
+      .is("salida", null)
+      .limit(1);
 
-    if (e1) {
-      setMsg({ type: "err", text: `Error comprobando hoy: ${e1.message}` });
-      return;
-    }
+    if (e0) return setMsg({ type: "err", text: e0.message });
+    if (abiertas?.length) return setMsg({ type: "err", text: "Ya tienes una jornada abierta." });
 
-    if (existing?.id) {
-      const { error: eUp } = await supabase
-        .from("registros")
-        .update({
-          [REG_TIPO_COL]: "Trabajo",
-          [REG_ENTRADA_COL]: entrada,
-          [REG_SALIDA_COL]: null,
-        })
-        .eq("id", existing.id);
+    const payload = {
+      empleado_id: perfil.empleado_id,
+      fecha: hoyYYYYMMDD(),
+      tipo: "Inicio",
+      entrada: horaHHMMSS(),
+      salida: null,
+      nota: (nota || "").trim() || null,
+    };
 
-      if (eUp) {
-        setMsg({ type: "err", text: `Error iniciando jornada: ${eUp.message}` });
-        return;
-      }
-    } else {
-      const { error: eIns } = await supabase.from("registros").insert({
-        empleado_id: empleadoId,
-        [REG_FECHA_COL]: hoy,
-        [REG_TIPO_COL]: "Trabajo",
-        [REG_ENTRADA_COL]: entrada,
-        [REG_SALIDA_COL]: null,
-      });
+    const { error } = await supabase.from("registros").insert(payload);
+    if (error) return setMsg({ type: "err", text: error.message });
 
-      if (eIns) {
-        setMsg({ type: "err", text: `Error iniciando jornada: ${eIns.message}` });
-        return;
-      }
-    }
-
-    setMsg({ type: "ok", text: "Jornada iniciada ✅" });
+    setNota("");
+    setMsg({ type: "ok", text: "Inicio de jornada ✅" });
     await refrescarHoy();
   }
 
+  // Finalizar jornada (cierra la última abierta)
   async function finalizarJornada() {
     setMsg(null);
+    if (!perfil?.empleado_id) return;
 
-    const empleadoId = perfil?.empleado_id;
-    if (!haySesion || !empleadoId) {
-      setMsg({ type: "err", text: "No hay sesión activa o empleado asociado." });
-      return;
-    }
-
-    if (!estadoHoy.dentro) {
-      setMsg({ type: "err", text: "No puedes finalizar: estás fuera (no hay entrada abierta)." });
-      return;
-    }
-
-    if (!registroHoy?.id) {
-      setMsg({ type: "err", text: "No encuentro el registro de hoy para cerrar." });
-      return;
-    }
-
-    const salida = fmtHoraSinSeg(new Date());
-
-    const { error } = await supabase
+    const { data: abiertas, error: e1 } = await supabase
       .from("registros")
-      .update({ [REG_SALIDA_COL]: salida })
-      .eq("id", registroHoy.id);
+      .select("id, nota")
+      .eq("empleado_id", perfil.empleado_id)
+      .eq("fecha", hoyYYYYMMDD())
+      .is("salida", null)
+      .order("entrada", { ascending: false })
+      .limit(1);
 
-    if (error) {
-      setMsg({ type: "err", text: `Error finalizando jornada: ${error.message}` });
-      return;
-    }
+    if (e1) return setMsg({ type: "err", text: e1.message });
+    if (!abiertas?.length) return setMsg({ type: "err", text: "No hay jornada abierta." });
 
-    setMsg({ type: "ok", text: "Jornada finalizada ✅" });
+    const row = abiertas[0];
+    const notaNueva = (nota || "").trim();
+    const notaFinal = notaNueva ? (row.nota ? `${row.nota}\n${notaNueva}` : notaNueva) : row.nota || null;
+
+    const { error: e2 } = await supabase
+      .from("registros")
+      .update({ salida: horaHHMMSS(), tipo: "Fin", nota: notaFinal })
+      .eq("id", row.id);
+
+    if (e2) return setMsg({ type: "err", text: e2.message });
+
+    setNota("");
+    setMsg({ type: "ok", text: "Fin de jornada ✅" });
     await refrescarHoy();
   }
 
-  // ---- Login/Logout ----
+  // Login / Logout
   async function entrar(e) {
     e?.preventDefault?.();
     setMsg(null);
@@ -467,10 +425,7 @@ export default function App() {
       password: pass || "",
     });
 
-    if (error) {
-      setMsg({ type: "err", text: error.message });
-      return;
-    }
+    if (error) return setMsg({ type: "err", text: error.message });
 
     setPass("");
     setTab("inicio");
@@ -481,61 +436,46 @@ export default function App() {
     setMsg(null);
     await supabase.auth.signOut();
 
-    setSession(null);
+    setTab("inicio");
+    setEmail("");
+    setPass("");
     setPerfil(null);
     setEmpleado(null);
     setRol("empleado");
-    setTab("inicio");
-
-    setEmail("");
-    setPass("");
-
-    setRegistroHoy(null);
+    setRegistrosHoy([]);
     setRegistrosRango([]);
-    setEmpleados([]);
-    setEmpleadoSel("");
     setRegistrosInspector([]);
-
+    setEmpleadoSel("");
     setMsg({ type: "ok", text: "Sesión cerrada" });
   }
 
-  // ---- Recuperar contraseña ----
+  // Recuperar contraseña (email)
   async function enviarRecuperacion() {
     setMsg(null);
     const em = (email || "").trim();
-    if (!em) {
-      setMsg({ type: "err", text: "Escribe tu email primero." });
-      return;
-    }
+    if (!em) return setMsg({ type: "err", text: "Escribe tu email primero." });
 
     const { error } = await supabase.auth.resetPasswordForEmail(em, {
       redirectTo: window.location.origin,
     });
 
-    if (error) {
-      setMsg({ type: "err", text: error.message });
-      return;
-    }
+    if (error) return setMsg({ type: "err", text: error.message });
 
     setMsg({ type: "ok", text: "Te hemos enviado un email para restablecer la contraseña." });
   }
 
+  // Guardar nueva contraseña (recovery)
   async function guardarNuevaPass() {
     setMsg(null);
     if (!newPass1 || newPass1.length < 6) {
-      setMsg({ type: "err", text: "La contraseña debe tener mínimo 6 caracteres." });
-      return;
+      return setMsg({ type: "err", text: "La contraseña debe tener mínimo 6 caracteres." });
     }
     if (newPass1 !== newPass2) {
-      setMsg({ type: "err", text: "Las contraseñas no coinciden." });
-      return;
+      return setMsg({ type: "err", text: "Las contraseñas no coinciden." });
     }
 
     const { error } = await supabase.auth.updateUser({ password: newPass1 });
-    if (error) {
-      setMsg({ type: "err", text: error.message });
-      return;
-    }
+    if (error) return setMsg({ type: "err", text: error.message });
 
     setRecoveryMode(false);
     setNewPass1("");
@@ -545,11 +485,13 @@ export default function App() {
   }
 
   async function cerrarRecoverySinGuardar() {
-    // Evita que el token de recovery deje sesión abierta
     setRecoveryMode(false);
     setNewPass1("");
     setNewPass2("");
+
     window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+
+    // MUY IMPORTANTE: si cierras, NO debe quedarse logueado con el token del email
     await supabase.auth.signOut();
     setSession(null);
     setPerfil(null);
@@ -558,32 +500,53 @@ export default function App() {
     setMsg({ type: "ok", text: "Cancelado. No se ha cambiado la contraseña." });
   }
 
-  const showHeaderNav = haySesion;
+  const haySesion = !!session?.user?.id;
+  const showHeaderNav = haySesion; // ocultar tabs/estado si no hay sesión
+
+  const nombreVisible = useMemo(() => {
+    const n = (empleado?.nombre || "").trim();
+    return n || "(Sin nombre)";
+  }, [empleado?.nombre]);
+
+  const fechaLarga = useMemo(() => fmtFechaLarga(ahora), [ahora]);
+  const horaGrande = useMemo(() => fmtHora(ahora), [ahora]);
+
+  const estado = useMemo(() => estadoDesdeRegistrosHoy(registrosHoy), [registrosHoy]);
+
+  const s = styles;
+
+  if (cargandoSesion) {
+    return (
+      <div style={s.pagina}>
+        <div style={{ maxWidth: 520, width: "100%", padding: 16, fontWeight: 900 }}>Cargando…</div>
+      </div>
+    );
+  }
 
   return (
-    <div style={styles.pagina}>
-      <div style={styles.shell}>
-        {/* HEADER */}
-        <div style={styles.header}>
-          <div style={styles.headerTop}>
-            <div style={styles.marca}>
-              <div style={styles.nombreMarca}>Cañizares S.A.</div>
-              <div style={styles.brandSub}>Control horario</div>
+    <div style={s.pagina}>
+      <div style={s.shell}>
+        {/* HEADER ROJO */}
+        <div style={s.header}>
+          <div style={s.headerTop}>
+            <div style={s.marca}>
+              <div style={s.nombreMarca}>Cañizares S.A.</div>
+              <div style={s.brandSub}>Control horario</div>
             </div>
 
-            <div style={styles.datePill}>{fechaLarga}</div>
+            <div style={s.datePill}>{fechaLarga}</div>
           </div>
 
-          <div style={styles.reloj}>
+          <div style={s.reloj}>
             <div style={{ fontSize: 12, opacity: 0.9, fontWeight: 800 }}>Hora actual</div>
-            <div style={styles.clockBig}>{horaGrande}</div>
+            <div style={s.clockBig}>{horaGrande}</div>
           </div>
 
           {showHeaderNav && (
             <>
-              <div style={styles.statusPill}>
+              <div style={s.statusPill}>
                 <div style={{ opacity: 0.9, fontWeight: 800 }}>Estado</div>
-                <div style={styles.statusValue}>
+                <div style={s.statusValue}>
                   <span
                     style={{
                       display: "inline-block",
@@ -591,23 +554,20 @@ export default function App() {
                       height: 12,
                       borderRadius: 999,
                       marginRight: 8,
-                      background: estadoHoy.estado === "Dentro" ? "#7CFC00" : "#d9d9d9",
+                      background: estado === "Dentro" ? "#7CFC00" : "#d9d9d9",
                       border: "2px solid rgba(255,255,255,0.55)",
                     }}
                   />
-                  {estadoHoy.estado}
+                  {estado}
                 </div>
               </div>
 
-              <div style={styles.tabs}>
-                <button
-                  style={tab === "inicio" ? styles.tabActive : styles.tab}
-                  onClick={() => setTab("inicio")}
-                >
+              <div style={s.tabs}>
+                <button style={tab === "inicio" ? s.tabActive : s.tab} onClick={() => setTab("inicio")}>
                   Inicio
                 </button>
                 <button
-                  style={tab === "historico" ? styles.tabActive : styles.tab}
+                  style={tab === "historico" ? s.tabActive : s.tab}
                   onClick={() => setTab("historico")}
                 >
                   Histórico
@@ -617,21 +577,21 @@ export default function App() {
           )}
         </div>
 
-        {/* CARD */}
-        <div style={styles.card}>
+        {/* TARJETA BLANCA */}
+        <div style={s.card}>
           {!haySesion && (
             <form onSubmit={entrar}>
-              <div style={styles.cardTitle}>Acceso</div>
+              <div style={s.cardTitle}>Acceso</div>
 
               <input
-                style={styles.input}
+                style={s.input}
                 placeholder="Email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 autoComplete="email"
               />
               <input
-                style={styles.input}
+                style={s.input}
                 placeholder="Password"
                 type="password"
                 value={pass}
@@ -639,14 +599,14 @@ export default function App() {
                 autoComplete="current-password"
               />
 
-              <button style={styles.btnMain} type="submit" disabled={cargandoSesion}>
+              <button style={s.btnMain} type="submit">
                 Entrar
               </button>
 
               <div style={{ marginTop: 12, display: "flex", gap: 16, flexWrap: "wrap" }}>
                 <button
                   type="button"
-                  style={styles.linkBtn}
+                  style={s.linkBtn}
                   onClick={() => {
                     setShowRecover(true);
                     setMsg(null);
@@ -657,7 +617,7 @@ export default function App() {
 
                 <button
                   type="button"
-                  style={styles.linkBtn}
+                  style={s.linkBtn}
                   onClick={() => {
                     setShowPrivacidad(true);
                     setMsg(null);
@@ -668,7 +628,7 @@ export default function App() {
               </div>
 
               {msg && (
-                <div style={msg.type === "ok" ? styles.msgOk : styles.msgErr}>
+                <div style={msg.type === "ok" ? s.msgOk : s.msgErr}>
                   {msg.type === "ok" ? "✅ " : "❌ "}
                   {msg.text}
                 </div>
@@ -678,67 +638,71 @@ export default function App() {
 
           {haySesion && (
             <>
-              {/* USER ROW (grid para que no se monte Salir) */}
-              <div style={styles.userRow}>
-                <div style={styles.userPill}>
+              <div style={s.userRow}>
+                <div style={s.userPill}>
                   <span style={{ marginRight: 10 }}>👤</span>
-                  <span style={{ fontWeight: 900, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  <span style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {nombreVisible}
                   </span>
                   {(isInspector || isAdmin) && (
-                    <span style={styles.roleBadge}>{isAdmin ? "ADMIN" : "INSPECCIÓN"}</span>
+                    <span style={s.roleBadge}>{isAdmin ? "ADMIN" : "INSPECCIÓN"}</span>
                   )}
                 </div>
 
-                <button style={styles.btnOut} onClick={salir}>
+                <button style={s.btnOut} onClick={salir}>
                   Salir
                 </button>
               </div>
 
-              <div style={styles.hr} />
+              <div style={s.hr} />
 
               {/* INICIO */}
               {tab === "inicio" && (
                 <>
+                  <div style={s.label}>Nota</div>
+                  <input
+                    style={s.input}
+                    placeholder="(Opcional) Se guardará al iniciar o finalizar"
+                    value={nota}
+                    onChange={(e) => setNota(e.target.value)}
+                  />
+                  <div style={{ fontSize: 13, opacity: 0.75, fontWeight: 700 }}>
+                    Ej.: motivo de ausencia, detalle del día, etc.
+                  </div>
+
                   {msg && (
-                    <div style={msg.type === "ok" ? styles.msgOk : styles.msgErr}>
+                    <div style={msg.type === "ok" ? s.msgOk : s.msgErr}>
                       {msg.type === "ok" ? "✅ " : "❌ "}
                       {msg.text}
                     </div>
                   )}
 
-                  <div style={styles.hr} />
+                  <div style={s.hr} />
 
-                  <div style={styles.sectionTitle}>Registro de hoy</div>
-
-                  {!registroHoy ? (
+                  <div style={s.sectionTitle}>Registro de hoy</div>
+                  {registrosHoy.length === 0 ? (
                     <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin registros hoy)</div>
                   ) : (
-                    <div style={styles.list}>
-                      <div style={styles.listRow}>
-                        <div style={{ fontWeight: 950 }}>{registroHoy[REG_TIPO_COL] || "Trabajo"}</div>
-                        <div style={{ opacity: 0.85, fontWeight: 800 }}>
-                          {registroHoy[REG_FECHA_COL]} —{" "}
-                          {(registroHoy[REG_ENTRADA_COL] || "--:--") + " → " + (registroHoy[REG_SALIDA_COL] || "--:--")}
+                    <div style={s.list}>
+                      {registrosHoy.slice(0, 20).map((r) => (
+                        <div key={r.id} style={s.listRow}>
+                          <div style={{ fontWeight: 950 }}>{tipoBonito(r.tipo)}</div>
+                          <div style={{ opacity: 0.85, fontWeight: 800 }}>
+                            {r.fecha} — {r.entrada} → {r.salida || "(abierta)"}
+                          </div>
+                          <div style={{ opacity: 0.85 }}>
+                            <span style={{ fontWeight: 900 }}>Nota:</span> {r.nota ? r.nota : "-"}
+                          </div>
                         </div>
-                      </div>
+                      ))}
                     </div>
                   )}
 
-                  {/* BOTONES */}
-                  <div style={styles.bottomBar}>
-                    <button
-                      style={styles.btnSoft}
-                      onClick={iniciarJornada}
-                      disabled={estadoHoy.dentro}
-                    >
+                  <div style={s.bottomBar}>
+                    <button style={s.btnSoft} onClick={iniciarJornada} disabled={estado === "Dentro"}>
                       Iniciar jornada
                     </button>
-                    <button
-                      style={styles.btnSoft}
-                      onClick={finalizarJornada}
-                      disabled={!estadoHoy.dentro}
-                    >
+                    <button style={s.btnSoft} onClick={finalizarJornada} disabled={estado !== "Dentro"}>
                       Finalizar jornada
                     </button>
                   </div>
@@ -748,70 +712,45 @@ export default function App() {
               {/* HISTÓRICO */}
               {tab === "historico" && (
                 <>
-                  <div style={styles.sectionTitle}>Histórico</div>
+                  <div style={s.sectionTitle}>Histórico</div>
 
-                  <div style={styles.filters}>
-                    <div style={styles.filterCol}>
-                      <div style={styles.filterLabel}>Desde</div>
-                      <input
-                        type="date"
-                        value={desde}
-                        onChange={(e) => setDesde(e.target.value)}
-                        style={styles.input}
-                      />
+                  <div style={s.filters}>
+                    <div style={s.filterCol}>
+                      <div style={s.filterLabel}>Desde</div>
+                      <input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} style={s.input} />
                     </div>
-                    <div style={styles.filterCol}>
-                      <div style={styles.filterLabel}>Hasta</div>
-                      <input
-                        type="date"
-                        value={hasta}
-                        onChange={(e) => setHasta(e.target.value)}
-                        style={styles.input}
-                      />
+                    <div style={s.filterCol}>
+                      <div style={s.filterLabel}>Hasta</div>
+                      <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} style={s.input} />
                     </div>
                   </div>
 
-                  {/* Inspector/Admin */}
-                  {(isInspector || isAdmin) && (
+                  {(isInspector || isAdmin) ? (
                     <div style={{ marginTop: 12 }}>
-                      <div style={styles.filterLabel}>Empleado</div>
-                      <select
-                        style={styles.select}
-                        value={empleadoSel}
-                        onChange={(e) => setEmpleadoSel(e.target.value)}
-                      >
+                      <div style={s.filterLabel}>Empleado</div>
+                      <select style={s.select} value={empleadoSel} onChange={(e) => setEmpleadoSel(e.target.value)}>
                         <option value="">(Todos)</option>
                         {empleados.map((emp) => (
                           <option key={emp.id} value={emp.id}>
-                            {(emp.nombre || "").trim() || emp.id}
+                            {emp.nombre || emp.id}
                           </option>
                         ))}
                       </select>
 
                       <div style={{ display: "flex", gap: 12, marginTop: 12, flexWrap: "wrap" }}>
-                        <button
-                          style={styles.btnMainSmall}
-                          onClick={cargarInspector}
-                          disabled={cargandoInspector}
-                        >
+                        <button style={s.btnMainSmall} onClick={cargarInspector} disabled={cargandoInspector}>
                           {cargandoInspector ? "Cargando..." : "Buscar"}
                         </button>
 
                         <button
-                          style={styles.btnMainSmall}
+                          style={s.btnMainSmall}
                           onClick={() => {
                             const rows = [
-                              ["Empleado", "Fecha", "Entrada", "Salida", "Tipo"],
+                              ["Empleado", "Tipo", "Fecha", "Entrada", "Salida", "Nota"],
                               ...(registrosInspector || []).map((r) => {
                                 const emp = empleados.find((x) => x.id === r.empleado_id);
-                                const empName = emp ? (emp.nombre || "").trim() : r.empleado_id;
-                                return [
-                                  empName,
-                                  r[REG_FECHA_COL],
-                                  r[REG_ENTRADA_COL] || "",
-                                  r[REG_SALIDA_COL] || "",
-                                  r[REG_TIPO_COL] || "",
-                                ];
+                                const empName = emp?.nombre || r.empleado_id;
+                                return [empName, tipoBonito(r.tipo), r.fecha, r.entrada, r.salida || "", r.nota || ""];
                               }),
                             ];
                             downloadCSV(`control_horario_${desde}_a_${hasta}.csv`, rows);
@@ -822,25 +761,26 @@ export default function App() {
                         </button>
                       </div>
 
-                      <div style={styles.hr} />
+                      <div style={s.hr} />
 
-                      <div style={styles.sectionTitle}>Resultados</div>
+                      <div style={s.sectionTitle}>Resultados</div>
                       {!registrosInspector?.length ? (
                         <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin resultados en ese rango)</div>
                       ) : (
-                        <div style={styles.list}>
+                        <div style={s.list}>
                           {registrosInspector.slice(0, 300).map((r) => {
                             const emp = empleados.find((x) => x.id === r.empleado_id);
-                            const empName = emp ? (emp.nombre || "").trim() : r.empleado_id;
+                            const empName = emp?.nombre || r.empleado_id;
 
                             return (
-                              <div key={r.id || `${r.empleado_id}-${r[REG_FECHA_COL]}`} style={styles.listRow}>
+                              <div key={r.id} style={s.listRow}>
                                 <div style={{ fontWeight: 950 }}>{empName}</div>
+                                <div style={{ fontWeight: 900 }}>{tipoBonito(r.tipo)}</div>
                                 <div style={{ opacity: 0.85, fontWeight: 800 }}>
-                                  {r[REG_FECHA_COL]} — {(r[REG_ENTRADA_COL] || "--:--") + " → " + (r[REG_SALIDA_COL] || "--:--")}
+                                  {r.fecha} — {r.entrada} → {r.salida || "(abierta)"}
                                 </div>
-                                <div style={{ opacity: 0.8, fontWeight: 800 }}>
-                                  {r[REG_TIPO_COL] || "Trabajo"}
+                                <div style={{ opacity: 0.85 }}>
+                                  <span style={{ fontWeight: 900 }}>Nota:</span> {r.nota ? r.nota : "-"}
                                 </div>
                               </div>
                             );
@@ -848,20 +788,20 @@ export default function App() {
                         </div>
                       )}
                     </div>
-                  )}
-
-                  {/* Usuario normal */}
-                  {!isInspector && !isAdmin && (
+                  ) : (
                     <div style={{ marginTop: 12 }}>
                       {!registrosRango?.length ? (
                         <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin resultados en ese rango)</div>
                       ) : (
-                        <div style={styles.list}>
+                        <div style={s.list}>
                           {registrosRango.slice(0, 300).map((r) => (
-                            <div key={r.id || `${r[REG_FECHA_COL]}-${r[REG_ENTRADA_COL]}`} style={styles.listRow}>
-                              <div style={{ fontWeight: 950 }}>{r[REG_TIPO_COL] || "Trabajo"}</div>
+                            <div key={r.id} style={s.listRow}>
+                              <div style={{ fontWeight: 900 }}>{tipoBonito(r.tipo)}</div>
                               <div style={{ opacity: 0.85, fontWeight: 800 }}>
-                                {r[REG_FECHA_COL]} — {(r[REG_ENTRADA_COL] || "--:--") + " → " + (r[REG_SALIDA_COL] || "--:--")}
+                                {r.fecha} — {r.entrada} → {r.salida || "(abierta)"}
+                              </div>
+                              <div style={{ opacity: 0.85 }}>
+                                <span style={{ fontWeight: 900 }}>Nota:</span> {r.nota ? r.nota : "-"}
                               </div>
                             </div>
                           ))}
@@ -883,12 +823,7 @@ export default function App() {
             Te enviaremos un email con un enlace para restablecer la contraseña.
           </div>
 
-          <input
-            style={styles.input}
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
+          <input style={styles.input} placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
 
           <button style={styles.btnMain} onClick={enviarRecuperacion}>
             Enviar enlace
@@ -903,7 +838,7 @@ export default function App() {
         </Modal>
       )}
 
-      {/* MODAL: RESET PASSWORD */}
+      {/* MODAL: RESET PASSWORD (recovery) */}
       {recoveryMode && (
         <Modal title="Restablecer contraseña" onClose={cerrarRecoverySinGuardar} closeText="Cerrar">
           <div style={{ fontWeight: 800, opacity: 0.8, marginBottom: 10 }}>
@@ -955,7 +890,8 @@ export default function App() {
 
             <div style={{ marginTop: 12, fontWeight: 900 }}>Finalidad</div>
             <div>
-              Gestión del control horario y registro de jornada laboral (entradas y salidas).
+              Gestión del control horario y registro de jornada laboral (entradas y salidas), incluyendo notas asociadas
+              al fichaje cuando el usuario las añada.
             </div>
 
             <div style={{ marginTop: 12, fontWeight: 900 }}>Base legal</div>
@@ -978,7 +914,9 @@ export default function App() {
   );
 }
 
-/* Modal */
+/* ----------------------- */
+/* Modal simple reutilizable */
+/* ----------------------- */
 function Modal({ title, children, onClose, closeText = "Cerrar" }) {
   return (
     <div style={styles.modalOverlay} onMouseDown={onClose}>
@@ -995,7 +933,9 @@ function Modal({ title, children, onClose, closeText = "Cerrar" }) {
   );
 }
 
-/* Estilos */
+/* ----------------------- */
+/* Estilos inline */
+/* ----------------------- */
 const styles = {
   pagina: {
     minHeight: "100vh",
@@ -1004,10 +944,7 @@ const styles = {
     display: "flex",
     justifyContent: "center",
   },
-  shell: {
-    width: "100%",
-    maxWidth: 520,
-  },
+  shell: { width: "100%", maxWidth: 520 },
   header: {
     background: "#b30000",
     borderRadius: 28,
@@ -1023,18 +960,8 @@ const styles = {
     flexWrap: "wrap",
   },
   marca: { minWidth: 200 },
-  nombreMarca: {
-    fontSize: 42,
-    lineHeight: 1.0,
-    fontWeight: 950,
-    letterSpacing: -0.5,
-  },
-  brandSub: {
-    fontSize: 22,
-    fontWeight: 800,
-    opacity: 0.95,
-    marginTop: 6,
-  },
+  nombreMarca: { fontSize: 42, lineHeight: 1.0, fontWeight: 950, letterSpacing: -0.5 },
+  brandSub: { fontSize: 22, fontWeight: 800, opacity: 0.95, marginTop: 6 },
   datePill: {
     background: "rgba(255,255,255,0.16)",
     border: "2px solid rgba(255,255,255,0.18)",
@@ -1046,13 +973,7 @@ const styles = {
     boxShadow: "inset 0 1px 0 rgba(255,255,255,0.18)",
   },
   reloj: { marginTop: 16 },
-  clockBig: {
-    fontSize: 64,
-    fontWeight: 950,
-    letterSpacing: -1,
-    lineHeight: 1.0,
-    marginTop: 6,
-  },
+  clockBig: { fontSize: 64, fontWeight: 950, letterSpacing: -1, lineHeight: 1.0, marginTop: 6 },
   statusPill: {
     marginTop: 16,
     background: "rgba(255,255,255,0.14)",
@@ -1064,12 +985,7 @@ const styles = {
     alignItems: "center",
     gap: 12,
   },
-  statusValue: {
-    fontWeight: 950,
-    fontSize: 20,
-    display: "flex",
-    alignItems: "center",
-  },
+  statusValue: { fontWeight: 950, fontSize: 20, display: "flex", alignItems: "center" },
   tabs: { marginTop: 14, display: "flex", gap: 14 },
   tab: {
     flex: 1,
@@ -1099,12 +1015,7 @@ const styles = {
     boxShadow: "0 14px 30px rgba(0,0,0,0.10)",
     border: "1px solid rgba(0,0,0,0.06)",
   },
-  cardTitle: {
-    fontSize: 34,
-    fontWeight: 950,
-    color: "#1f2a37",
-    marginBottom: 12,
-  },
+  cardTitle: { fontSize: 34, fontWeight: 950, color: "#1f2a37", marginBottom: 12 },
   input: {
     width: "100%",
     borderRadius: 18,
@@ -1177,14 +1088,11 @@ const styles = {
     color: "#7f1d1d",
   },
 
-  // ✅ GRID para que nunca se monte el botón Salir
-  userRow: {
-    display: "grid",
-    gridTemplateColumns: "1fr auto",
-    gap: 12,
-    alignItems: "center",
-  },
+  // <-- AQUÍ está el arreglo para que NO se monte "Salir" con el nombre:
+  userRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 },
   userPill: {
+    flex: 1,
+    minWidth: 0,
     display: "flex",
     alignItems: "center",
     gap: 10,
@@ -1193,7 +1101,6 @@ const styles = {
     border: "2px solid rgba(0,0,0,0.08)",
     background: "#fafafa",
     fontSize: 20,
-    minWidth: 0,
     overflow: "hidden",
   },
   roleBadge: {
@@ -1208,25 +1115,18 @@ const styles = {
     flexShrink: 0,
   },
   btnOut: {
+    flexShrink: 0,
     borderRadius: 18,
     padding: "12px 16px",
     border: "2px solid rgba(0,0,0,0.10)",
     background: "white",
     fontWeight: 950,
     fontSize: 18,
-    whiteSpace: "nowrap",
   },
-  hr: {
-    height: 1,
-    background: "rgba(0,0,0,0.08)",
-    margin: "14px 0",
-  },
-  sectionTitle: {
-    fontSize: 26,
-    fontWeight: 950,
-    color: "#111827",
-    marginBottom: 8,
-  },
+
+  hr: { height: 1, background: "rgba(0,0,0,0.08)", margin: "14px 0" },
+  label: { fontSize: 18, fontWeight: 950, color: "#374151", marginTop: 6 },
+  sectionTitle: { fontSize: 26, fontWeight: 950, color: "#111827", marginBottom: 8 },
   list: { display: "flex", flexDirection: "column", gap: 10 },
   listRow: {
     borderRadius: 18,
@@ -1234,12 +1134,7 @@ const styles = {
     padding: "12px 14px",
     background: "#fbfbfb",
   },
-  bottomBar: {
-    display: "flex",
-    gap: 12,
-    marginTop: 14,
-    flexWrap: "wrap",
-  },
+  bottomBar: { display: "flex", gap: 12, marginTop: 14, flexWrap: "wrap" },
   btnSoft: {
     flex: 1,
     minWidth: 180,
@@ -1272,13 +1167,7 @@ const styles = {
     padding: 16,
     boxShadow: "0 18px 40px rgba(0,0,0,0.22)",
   },
-  modalHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 12,
-    marginBottom: 10,
-  },
+  modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 10 },
   modalTitle: { fontSize: 28, fontWeight: 950, color: "#111827" },
   modalClose: {
     borderRadius: 999,
