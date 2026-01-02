@@ -9,10 +9,6 @@ import "./style.css";
  * public.empleados:  id (uuid), nombre (text), rol (text)
  * public.usuarios:   user_id (uuid), empleado_id (uuid), rol (text), es_admin (bool), es_inspector (bool)
  * public.registros:  id (uuid), empleado_id (uuid), fecha (date), tipo (text), entrada (time), salida (time), nota (text)
- *
- * Jornada partida => VARIAS FILAS mismo día:
- *  - iniciar jornada: inserta nueva fila (fecha hoy, entrada hora, salida null)
- *  - finalizar jornada: actualiza la ÚLTIMA fila abierta (salida null) poniendo salida hora
  */
 
 const EMPRESA = {
@@ -34,18 +30,8 @@ function fmtHora(d) {
 function fmtFechaLarga(d) {
   const dias = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
   const meses = [
-    "enero",
-    "febrero",
-    "marzo",
-    "abril",
-    "mayo",
-    "junio",
-    "julio",
-    "agosto",
-    "septiembre",
-    "octubre",
-    "noviembre",
-    "diciembre",
+    "enero","febrero","marzo","abril","mayo","junio",
+    "julio","agosto","septiembre","octubre","noviembre","diciembre",
   ];
   return `Hoy, ${dias[d.getDay()]}, ${d.getDate()} de ${meses[d.getMonth()]} de ${d.getFullYear()}`;
 }
@@ -99,14 +85,54 @@ function tipoBonito(tipo) {
 }
 
 function calcularEstadoHoy(registrosHoy) {
-  // Si hay alguna fila HOY con salida NULL => Dentro
-  // Si no => Fuera
   const abierto = (registrosHoy || []).some((r) => !r.salida);
   return { estado: abierto ? "Dentro" : "Fuera", abiertoTrabajo: abierto };
 }
 
+/* =========================
+   ✅ ErrorBoundary para evitar “pantalla en blanco”
+   ========================= */
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null, info: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, info) {
+    this.setState({ info });
+    // Esto saldrá en consola si lo abres en ordenador
+    console.error("APP ERROR:", error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 16, fontFamily: "system-ui" }}>
+          <h2 style={{ marginTop: 0 }}>⚠️ Error cargando la aplicación</h2>
+          <p>Esto explica la pantalla en blanco. Copia este error y pásamelo:</p>
+          <pre style={{
+            whiteSpace: "pre-wrap",
+            background: "#111",
+            color: "#0f0",
+            padding: 12,
+            borderRadius: 8,
+            overflow: "auto"
+          }}>
+{String(this.state.error?.message || this.state.error || "Error desconocido")}
+          </pre>
+          <p style={{ opacity: 0.8 }}>
+            Si quieres, prueba también abrir desde ordenador y mirar Console (F12).
+          </p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ---------- App ----------
-export default function App() {
+function AppInner() {
   const [ahora, setAhora] = useState(new Date());
 
   // Auth/UI
@@ -118,8 +144,8 @@ export default function App() {
   const [msg, setMsg] = useState(null); // {type:'ok'|'err', text:''}
 
   // Perfil/roles
-  const [perfil, setPerfil] = useState(null); // usuarios row
-  const [empleado, setEmpleado] = useState(null); // empleados row (del usuario)
+  const [perfil, setPerfil] = useState(null);
+  const [empleado, setEmpleado] = useState(null);
   const [rol, setRol] = useState("empleado"); // empleado | admin | inspector
   const isInspector = rol === "inspector";
   const isAdmin = rol === "admin";
@@ -138,7 +164,7 @@ export default function App() {
 
   // Inspector/admin
   const [empleados, setEmpleados] = useState([]);
-  const [empleadoSel, setEmpleadoSel] = useState(""); // empleado_id seleccionado o "" (todos)
+  const [empleadoSel, setEmpleadoSel] = useState("");
   const [registrosInspector, setRegistrosInspector] = useState([]);
   const [cargandoInspector, setCargandoInspector] = useState(false);
 
@@ -346,12 +372,11 @@ export default function App() {
 
   const estadoHoy = useMemo(() => calcularEstadoHoy(registrosHoy), [registrosHoy]);
 
-  // --------- Jornada partida: varias filas mismo día ---------
+  // --------- Jornada partida ---------
   async function iniciarJornada() {
     setMsg(null);
     if (!perfil?.empleado_id) return;
 
-    // si ya hay una jornada abierta (alguna fila sin salida), no iniciar otra
     const abierta = (registrosHoy || []).some((r) => !r.salida);
     if (abierta) {
       setMsg({ type: "err", text: "Ya tienes la jornada iniciada (hay un tramo abierto)." });
@@ -383,7 +408,6 @@ export default function App() {
     setMsg(null);
     if (!perfil?.empleado_id) return;
 
-    // buscamos el último tramo de HOY sin salida
     const { data, error } = await supabase
       .from("registros")
       .select("id, entrada, salida, nota")
@@ -405,10 +429,7 @@ export default function App() {
     }
 
     const notaLimpia = (nota || "").trim() || null;
-    const updatePayload = {
-      salida: horaAhora(),
-      tipo: "fin",
-    };
+    const updatePayload = { salida: horaAhora(), tipo: "fin" };
     if (notaLimpia) updatePayload.nota = notaLimpia;
 
     const { error: e2 } = await supabase.from("registros").update(updatePayload).eq("id", abierto.id);
@@ -510,7 +531,7 @@ export default function App() {
     setNewPass1("");
     setNewPass2("");
     window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
-    await supabase.auth.signOut(); // clave: no entrar sin cambiar pass
+    await supabase.auth.signOut();
     setSession(null);
     setPerfil(null);
     setEmpleado(null);
@@ -518,13 +539,11 @@ export default function App() {
     setMsg({ type: "ok", text: "Cancelado. No se ha cambiado la contraseña." });
   }
 
-  // Nombre visible
   const nombreVisible = useMemo(() => {
     const n = (empleado?.nombre || "").trim();
     return n || "(Sin nombre)";
   }, [empleado?.nombre]);
 
-  // UI helpers
   const fechaLarga = useMemo(() => fmtFechaLarga(ahora), [ahora]);
   const horaGrande = useMemo(() => fmtHora(ahora), [ahora]);
 
@@ -532,7 +551,6 @@ export default function App() {
   const haySesion = !!session?.user?.id;
   const showHeaderNav = haySesion;
 
-  // --------- UI ---------
   return (
     <div style={s.pagina}>
       <div style={s.shell}>
@@ -574,10 +592,7 @@ export default function App() {
                 <button style={tab === "inicio" ? s.tabActive : s.tab} onClick={() => setTab("inicio")}>
                   Inicio
                 </button>
-                <button
-                  style={tab === "historico" ? s.tabActive : s.tab}
-                  onClick={() => setTab("historico")}
-                >
+                <button style={tab === "historico" ? s.tabActive : s.tab} onClick={() => setTab("historico")}>
                   Histórico
                 </button>
               </div>
@@ -611,36 +626,26 @@ export default function App() {
               </button>
 
               <div style={{ marginTop: 12, display: "flex", gap: 16, flexWrap: "wrap" }}>
-                <button
-                  type="button"
-                  style={s.linkBtn}
-                  onClick={() => {
-                    setShowRecover(true);
-                    setMsg(null);
-                  }}
-                >
+                <button type="button" style={s.linkBtn} onClick={() => setShowRecover(true)}>
                   ¿Has olvidado la contraseña?
                 </button>
 
-                <button
-                  type="button"
-                  style={s.linkBtn}
-                  onClick={() => {
-                    setShowPrivacidad(true);
-                    setMsg(null);
-                  }}
-                >
+                <button type="button" style={s.linkBtn} onClick={() => setShowPrivacidad(true)}>
                   Aviso de privacidad
                 </button>
               </div>
 
-              {msg && <div style={msg.type === "ok" ? s.msgOk : s.msgErr}>{msg.type === "ok" ? "✅ " : "❌ "}{msg.text}</div>}
+              {msg && (
+                <div style={msg.type === "ok" ? s.msgOk : s.msgErr}>
+                  {msg.type === "ok" ? "✅ " : "❌ "}
+                  {msg.text}
+                </div>
+              )}
             </form>
           )}
 
           {haySesion && (
             <>
-              {/* FALLO ESTÉTICO RESUELTO: userRow con wrap + userPill minWidth 0 */}
               <div style={s.userRow}>
                 <div style={s.userPill}>
                   <span style={{ marginRight: 10 }}>👤</span>
@@ -668,11 +673,13 @@ export default function App() {
                     value={nota}
                     onChange={(e) => setNota(e.target.value)}
                   />
-                  <div style={{ fontSize: 13, opacity: 0.75, fontWeight: 700 }}>
-                    Ej.: motivo de ausencia, detalle del día, etc.
-                  </div>
 
-                  {msg && <div style={msg.type === "ok" ? s.msgOk : s.msgErr}>{msg.type === "ok" ? "✅ " : "❌ "}{msg.text}</div>}
+                  {msg && (
+                    <div style={msg.type === "ok" ? s.msgOk : s.msgErr}>
+                      {msg.type === "ok" ? "✅ " : "❌ "}
+                      {msg.text}
+                    </div>
+                  )}
 
                   <div style={s.hr} />
 
@@ -818,7 +825,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* MODAL RECUPERAR */}
       {showRecover && (
         <Modal title="Recuperar contraseña" onClose={() => setShowRecover(false)}>
           <div style={{ fontWeight: 800, opacity: 0.8, marginBottom: 10 }}>
@@ -830,11 +836,15 @@ export default function App() {
             Enviar enlace
           </button>
 
-          {msg && <div style={msg.type === "ok" ? styles.msgOk : styles.msgErr}>{msg.type === "ok" ? "✅ " : "❌ "}{msg.text}</div>}
+          {msg && (
+            <div style={msg.type === "ok" ? styles.msgOk : styles.msgErr}>
+              {msg.type === "ok" ? "✅ " : "❌ "}
+              {msg.text}
+            </div>
+          )}
         </Modal>
       )}
 
-      {/* MODAL RESET PASS */}
       {recoveryMode && (
         <Modal title="Restablecer contraseña" onClose={cerrarRecoverySinGuardar} closeText="Cerrar">
           <div style={{ fontWeight: 800, opacity: 0.8, marginBottom: 10 }}>
@@ -860,11 +870,15 @@ export default function App() {
             Guardar contraseña
           </button>
 
-          {msg && <div style={msg.type === "ok" ? styles.msgOk : styles.msgErr}>{msg.type === "ok" ? "✅ " : "❌ "}{msg.text}</div>}
+          {msg && (
+            <div style={msg.type === "ok" ? styles.msgOk : styles.msgErr}>
+              {msg.type === "ok" ? "✅ " : "❌ "}
+              {msg.text}
+            </div>
+          )}
         </Modal>
       )}
 
-      {/* MODAL PRIVACIDAD */}
       {showPrivacidad && (
         <Modal title="Aviso de privacidad" onClose={() => setShowPrivacidad(false)}>
           <div style={{ lineHeight: 1.5 }}>
@@ -901,7 +915,14 @@ export default function App() {
   );
 }
 
-// ---------- Modal ----------
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
+  );
+}
+
 function Modal({ title, children, onClose, closeText = "Cerrar" }) {
   return (
     <div style={styles.modalOverlay} onMouseDown={onClose}>
@@ -943,12 +964,7 @@ const styles = {
     flexWrap: "wrap",
   },
   marca: { minWidth: 200 },
-  nombreMarca: {
-    fontSize: 42,
-    lineHeight: 1.0,
-    fontWeight: 950,
-    letterSpacing: -0.5,
-  },
+  nombreMarca: { fontSize: 42, lineHeight: 1.0, fontWeight: 950, letterSpacing: -0.5 },
   brandSub: { fontSize: 22, fontWeight: 800, opacity: 0.95, marginTop: 6 },
   datePill: {
     background: "rgba(255,255,255,0.16)",
@@ -961,13 +977,7 @@ const styles = {
     boxShadow: "inset 0 1px 0 rgba(255,255,255,0.18)",
   },
   reloj: { marginTop: 16 },
-  clockBig: {
-    fontSize: 64,
-    fontWeight: 950,
-    letterSpacing: -1,
-    lineHeight: 1.0,
-    marginTop: 6,
-  },
+  clockBig: { fontSize: 64, fontWeight: 950, letterSpacing: -1, lineHeight: 1.0, marginTop: 6 },
   statusPill: {
     marginTop: 16,
     background: "rgba(255,255,255,0.14)",
@@ -1081,15 +1091,7 @@ const styles = {
     fontWeight: 950,
     color: "#7f1d1d",
   },
-
-  // 🔧 Arreglo estético: no se montan nombre/botón salir
-  userRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 12,
-    flexWrap: "wrap",
-  },
+  userRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" },
   userPill: {
     flex: "1 1 auto",
     display: "flex",
@@ -1124,33 +1126,16 @@ const styles = {
     whiteSpace: "nowrap",
     flex: "0 0 auto",
   },
-
   hr: { height: 1, background: "rgba(0,0,0,0.08)", margin: "14px 0" },
   label: { fontSize: 18, fontWeight: 950, color: "#374151", marginTop: 6 },
   sectionTitle: { fontSize: 26, fontWeight: 950, color: "#111827", marginBottom: 8 },
   list: { display: "flex", flexDirection: "column", gap: 10 },
-  listRow: {
-    borderRadius: 18,
-    border: "2px solid rgba(0,0,0,0.06)",
-    padding: "12px 14px",
-    background: "#fbfbfb",
-  },
+  listRow: { borderRadius: 18, border: "2px solid rgba(0,0,0,0.06)", padding: "12px 14px", background: "#fbfbfb" },
   bottomBar: { display: "flex", gap: 12, marginTop: 14, flexWrap: "wrap" },
-  btnSoft: {
-    flex: 1,
-    minWidth: 180,
-    borderRadius: 22,
-    padding: "16px 18px",
-    fontSize: 18,
-    fontWeight: 950,
-    border: "2px solid rgba(0,0,0,0.08)",
-    background: "#f6f6f6",
-  },
+  btnSoft: { flex: 1, minWidth: 180, borderRadius: 22, padding: "16px 18px", fontSize: 18, fontWeight: 950, border: "2px solid rgba(0,0,0,0.08)", background: "#f6f6f6" },
   filters: { display: "flex", gap: 12, flexWrap: "wrap" },
   filterCol: { flex: 1, minWidth: 160 },
   filterLabel: { fontWeight: 950, opacity: 0.8, marginBottom: 6 },
-
-  // Modal
   modalOverlay: {
     position: "fixed",
     inset: 0,
@@ -1169,20 +1154,7 @@ const styles = {
     padding: 16,
     boxShadow: "0 18px 40px rgba(0,0,0,0.22)",
   },
-  modalHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 12,
-    marginBottom: 10,
-  },
+  modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 10 },
   modalTitle: { fontSize: 28, fontWeight: 950, color: "#111827" },
-  modalClose: {
-    borderRadius: 999,
-    padding: "10px 14px",
-    border: "2px solid rgba(0,0,0,0.10)",
-    background: "white",
-    fontWeight: 950,
-    color: "#2563eb",
-  },
+  modalClose: { borderRadius: 999, padding: "10px 14px", border: "2px solid rgba(0,0,0,0.10)", background: "white", fontWeight: 950, color: "#2563eb" },
 };
