@@ -9,6 +9,10 @@ import "./style.css";
  * public.empleados:  id (uuid), nombre (text), rol (text)
  * public.usuarios:   user_id (uuid), empleado_id (uuid), rol (text), es_admin (bool), es_inspector (bool)
  * public.registros:  id (uuid), empleado_id (uuid), fecha (date), tipo (text), entrada (time), salida (time), nota (text)
+ *
+ * Jornada partida => VARIAS FILAS mismo día:
+ *  - iniciar jornada: inserta nueva fila (fecha hoy, entrada hora, salida null)
+ *  - finalizar jornada: actualiza la ÚLTIMA fila abierta (salida null) poniendo salida hora
  */
 
 const EMPRESA = {
@@ -30,8 +34,18 @@ function fmtHora(d) {
 function fmtFechaLarga(d) {
   const dias = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
   const meses = [
-    "enero","febrero","marzo","abril","mayo","junio",
-    "julio","agosto","septiembre","octubre","noviembre","diciembre",
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
   ];
   return `Hoy, ${dias[d.getDay()]}, ${d.getDate()} de ${meses[d.getMonth()]} de ${d.getFullYear()}`;
 }
@@ -59,6 +73,57 @@ function fromInputDate(str) {
   return dt;
 }
 
+// ---------- helpers horas ----------
+function timeToSeconds(t) {
+  if (!t) return null;
+  const parts = String(t).split(":").map((x) => parseInt(x, 10));
+  if (parts.length < 2) return null;
+  const [hh, mm, ss] = [parts[0], parts[1], parts[2] ?? 0];
+  if ([hh, mm, ss].some((n) => Number.isNaN(n))) return null;
+  return hh * 3600 + mm * 60 + ss;
+}
+
+function secondsToHHMM(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds || 0));
+  const hh = Math.floor(s / 3600);
+  const mm = Math.floor((s % 3600) / 60);
+  return `${pad2(hh)}:${pad2(mm)}`;
+}
+
+function tramoSegundos(r, opts = { contarAbiertosHoyHastaAhora: true }) {
+  const en = timeToSeconds(r.entrada);
+  if (en == null) return 0;
+
+  const sa = timeToSeconds(r.salida);
+
+  // Tramo abierto:
+  if (sa == null) {
+    if (opts.contarAbiertosHoyHastaAhora && r.fecha === hoyISO()) {
+      const ahora = new Date();
+      const nowSec = ahora.getHours() * 3600 + ahora.getMinutes() * 60 + ahora.getSeconds();
+      return Math.max(0, nowSec - en);
+    }
+    return 0;
+  }
+
+  return Math.max(0, sa - en);
+}
+
+function agruparPorFecha(registros) {
+  const map = new Map(); // fecha -> { items, totalSeg }
+  for (const r of registros || []) {
+    const key = r.fecha || "Sin fecha";
+    const cur = map.get(key) || { items: [], totalSeg: 0 };
+    cur.items.push(r);
+    cur.totalSeg += tramoSegundos(r);
+    map.set(key, cur);
+  }
+  return Array.from(map.entries())
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+    .map(([fecha, data]) => ({ fecha, ...data }));
+}
+
+// ---------- CSV ----------
 function downloadCSV(filename, rows) {
   const esc = (v) => {
     const s = String(v ?? "");
@@ -89,50 +154,8 @@ function calcularEstadoHoy(registrosHoy) {
   return { estado: abierto ? "Dentro" : "Fuera", abiertoTrabajo: abierto };
 }
 
-/* =========================
-   ✅ ErrorBoundary para evitar “pantalla en blanco”
-   ========================= */
-class ErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { hasError: false, error: null, info: null };
-  }
-  static getDerivedStateFromError(error) {
-    return { hasError: true, error };
-  }
-  componentDidCatch(error, info) {
-    this.setState({ info });
-    // Esto saldrá en consola si lo abres en ordenador
-    console.error("APP ERROR:", error, info);
-  }
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div style={{ padding: 16, fontFamily: "system-ui" }}>
-          <h2 style={{ marginTop: 0 }}>⚠️ Error cargando la aplicación</h2>
-          <p>Esto explica la pantalla en blanco. Copia este error y pásamelo:</p>
-          <pre style={{
-            whiteSpace: "pre-wrap",
-            background: "#111",
-            color: "#0f0",
-            padding: 12,
-            borderRadius: 8,
-            overflow: "auto"
-          }}>
-{String(this.state.error?.message || this.state.error || "Error desconocido")}
-          </pre>
-          <p style={{ opacity: 0.8 }}>
-            Si quieres, prueba también abrir desde ordenador y mirar Console (F12).
-          </p>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
 // ---------- App ----------
-function AppInner() {
+export default function App() {
   const [ahora, setAhora] = useState(new Date());
 
   // Auth/UI
@@ -144,8 +167,8 @@ function AppInner() {
   const [msg, setMsg] = useState(null); // {type:'ok'|'err', text:''}
 
   // Perfil/roles
-  const [perfil, setPerfil] = useState(null);
-  const [empleado, setEmpleado] = useState(null);
+  const [perfil, setPerfil] = useState(null); // usuarios row
+  const [empleado, setEmpleado] = useState(null); // empleados row (del usuario)
   const [rol, setRol] = useState("empleado"); // empleado | admin | inspector
   const isInspector = rol === "inspector";
   const isAdmin = rol === "admin";
@@ -164,7 +187,7 @@ function AppInner() {
 
   // Inspector/admin
   const [empleados, setEmpleados] = useState([]);
-  const [empleadoSel, setEmpleadoSel] = useState("");
+  const [empleadoSel, setEmpleadoSel] = useState(""); // empleado_id seleccionado o "" (todos)
   const [registrosInspector, setRegistrosInspector] = useState([]);
   const [cargandoInspector, setCargandoInspector] = useState(false);
 
@@ -372,7 +395,25 @@ function AppInner() {
 
   const estadoHoy = useMemo(() => calcularEstadoHoy(registrosHoy), [registrosHoy]);
 
-  // --------- Jornada partida ---------
+  // Totales
+  const totalHoySeg = useMemo(
+    () => (registrosHoy || []).reduce((acc, r) => acc + tramoSegundos(r), 0),
+    [registrosHoy]
+  );
+
+  const porDiaRangoUsuario = useMemo(() => agruparPorFecha(registrosRango), [registrosRango]);
+  const totalRangoUsuarioSeg = useMemo(
+    () => (registrosRango || []).reduce((acc, r) => acc + tramoSegundos(r), 0),
+    [registrosRango]
+  );
+
+  const porDiaInspector = useMemo(() => agruparPorFecha(registrosInspector), [registrosInspector]);
+  const totalInspectorSeg = useMemo(
+    () => (registrosInspector || []).reduce((acc, r) => acc + tramoSegundos(r), 0),
+    [registrosInspector]
+  );
+
+  // --------- Jornada partida: varias filas mismo día ---------
   async function iniciarJornada() {
     setMsg(null);
     if (!perfil?.empleado_id) return;
@@ -539,11 +580,13 @@ function AppInner() {
     setMsg({ type: "ok", text: "Cancelado. No se ha cambiado la contraseña." });
   }
 
+  // Nombre visible
   const nombreVisible = useMemo(() => {
     const n = (empleado?.nombre || "").trim();
     return n || "(Sin nombre)";
   }, [empleado?.nombre]);
 
+  // UI helpers
   const fechaLarga = useMemo(() => fmtFechaLarga(ahora), [ahora]);
   const horaGrande = useMemo(() => fmtHora(ahora), [ahora]);
 
@@ -551,6 +594,7 @@ function AppInner() {
   const haySesion = !!session?.user?.id;
   const showHeaderNav = haySesion;
 
+  // --------- UI ---------
   return (
     <div style={s.pagina}>
       <div style={s.shell}>
@@ -592,7 +636,10 @@ function AppInner() {
                 <button style={tab === "inicio" ? s.tabActive : s.tab} onClick={() => setTab("inicio")}>
                   Inicio
                 </button>
-                <button style={tab === "historico" ? s.tabActive : s.tab} onClick={() => setTab("historico")}>
+                <button
+                  style={tab === "historico" ? s.tabActive : s.tab}
+                  onClick={() => setTab("historico")}
+                >
                   Histórico
                 </button>
               </div>
@@ -626,11 +673,25 @@ function AppInner() {
               </button>
 
               <div style={{ marginTop: 12, display: "flex", gap: 16, flexWrap: "wrap" }}>
-                <button type="button" style={s.linkBtn} onClick={() => setShowRecover(true)}>
+                <button
+                  type="button"
+                  style={s.linkBtn}
+                  onClick={() => {
+                    setShowRecover(true);
+                    setMsg(null);
+                  }}
+                >
                   ¿Has olvidado la contraseña?
                 </button>
 
-                <button type="button" style={s.linkBtn} onClick={() => setShowPrivacidad(true)}>
+                <button
+                  type="button"
+                  style={s.linkBtn}
+                  onClick={() => {
+                    setShowPrivacidad(true);
+                    setMsg(null);
+                  }}
+                >
                   Aviso de privacidad
                 </button>
               </div>
@@ -673,6 +734,9 @@ function AppInner() {
                     value={nota}
                     onChange={(e) => setNota(e.target.value)}
                   />
+                  <div style={{ fontSize: 13, opacity: 0.75, fontWeight: 700 }}>
+                    Ej.: motivo de ausencia, detalle del día, etc.
+                  </div>
 
                   {msg && (
                     <div style={msg.type === "ok" ? s.msgOk : s.msgErr}>
@@ -684,15 +748,20 @@ function AppInner() {
                   <div style={s.hr} />
 
                   <div style={s.sectionTitle}>Registro de hoy</div>
+                  <div style={{ fontWeight: 950, opacity: 0.85, marginBottom: 10 }}>
+                    Total hoy: {secondsToHHMM(totalHoySeg)}
+                  </div>
+
                   {registrosHoy.length === 0 ? (
                     <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin registros hoy)</div>
                   ) : (
                     <div style={s.list}>
-                      {registrosHoy.slice(0, 20).map((r) => (
+                      {registrosHoy.slice(0, 50).map((r) => (
                         <div key={r.id} style={s.listRow}>
                           <div style={{ fontWeight: 900 }}>{tipoBonito(r.tipo)}</div>
                           <div style={{ opacity: 0.85, fontWeight: 800 }}>
-                            {r.fecha} — {r.entrada || "--:--:--"} → {r.salida || "--:--:--"}
+                            {r.fecha} — {r.entrada || "--:--:--"} → {r.salida || "--:--:--"}{" "}
+                            ( {secondsToHHMM(tramoSegundos(r))} )
                           </div>
                           <div style={{ opacity: 0.85 }}>
                             <span style={{ fontWeight: 900 }}>Nota:</span> {r.nota ? r.nota : "-"}
@@ -749,15 +818,17 @@ function AppInner() {
                           style={s.btnMainSmall}
                           onClick={() => {
                             const rows = [
-                              ["Empleado", "Fecha", "Entrada", "Salida", "Tipo", "Nota"],
+                              ["TOTAL RANGO", "", "", "", "", secondsToHHMM(totalInspectorSeg)],
+                              [],
+                              ["Fecha", "Empleado", "Entrada", "Salida", "Duración", "Nota"],
                               ...(registrosInspector || []).map((r) => {
                                 const emp = empleados.find((x) => x.id === r.empleado_id);
                                 return [
-                                  emp?.nombre || r.empleado_id,
                                   r.fecha,
+                                  emp?.nombre || r.empleado_id,
                                   r.entrada || "",
                                   r.salida || "",
-                                  tipoBonito(r.tipo),
+                                  secondsToHHMM(tramoSegundos(r)),
                                   r.nota || "",
                                 ];
                               }),
@@ -773,25 +844,44 @@ function AppInner() {
                       <div style={s.hr} />
                       <div style={s.sectionTitle}>Resultados</div>
 
+                      <div style={{ fontWeight: 950, opacity: 0.85, marginBottom: 10 }}>
+                        Total rango: {secondsToHHMM(totalInspectorSeg)}
+                      </div>
+
                       {!registrosInspector?.length ? (
                         <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin resultados en ese rango)</div>
                       ) : (
                         <div style={s.list}>
-                          {registrosInspector.slice(0, 300).map((r) => {
-                            const emp = empleados.find((x) => x.id === r.empleado_id);
-                            return (
-                              <div key={r.id} style={s.listRow}>
-                                <div style={{ fontWeight: 950 }}>{emp?.nombre || r.empleado_id}</div>
-                                <div style={{ opacity: 0.85, fontWeight: 800 }}>
-                                  {r.fecha} — {r.entrada || "--:--:--"} → {r.salida || "--:--:--"}
-                                </div>
-                                <div style={{ fontWeight: 900 }}>{tipoBonito(r.tipo)}</div>
-                                <div style={{ opacity: 0.85 }}>
-                                  <span style={{ fontWeight: 900 }}>Nota:</span> {r.nota ? r.nota : "-"}
-                                </div>
+                          {porDiaInspector.map((d) => (
+                            <div key={d.fecha} style={s.listRow}>
+                              <div style={{ fontWeight: 950, marginBottom: 6 }}>
+                                {d.fecha} — Total día: {secondsToHHMM(d.totalSeg)}
                               </div>
-                            );
-                          })}
+
+                              {d.items
+                                .slice()
+                                .sort((a, b) => (a.entrada < b.entrada ? 1 : -1))
+                                .map((r) => {
+                                  const emp = empleados.find((x) => x.id === r.empleado_id);
+                                  return (
+                                    <div
+                                      key={r.id}
+                                      style={{ padding: "6px 0", borderTop: "1px solid rgba(0,0,0,0.06)" }}
+                                    >
+                                      <div style={{ fontWeight: 950 }}>{emp?.nombre || r.empleado_id}</div>
+                                      <div style={{ opacity: 0.85, fontWeight: 800 }}>
+                                        {r.entrada || "--:--:--"} → {r.salida || "--:--:--"} ({" "}
+                                        {secondsToHHMM(tramoSegundos(r))} )
+                                      </div>
+                                      <div style={{ fontWeight: 900 }}>{tipoBonito(r.tipo)}</div>
+                                      <div style={{ opacity: 0.85 }}>
+                                        <span style={{ fontWeight: 900 }}>Nota:</span> {r.nota ? r.nota : "-"}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                            </div>
+                          ))}
                         </div>
                       )}
                     </div>
@@ -799,19 +889,38 @@ function AppInner() {
 
                   {!isInspector && !isAdmin && (
                     <div style={{ marginTop: 12 }}>
+                      <div style={{ fontWeight: 950, opacity: 0.85, marginBottom: 10 }}>
+                        Total rango: {secondsToHHMM(totalRangoUsuarioSeg)}
+                      </div>
+
                       {!registrosRango?.length ? (
                         <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin resultados en ese rango)</div>
                       ) : (
                         <div style={s.list}>
-                          {registrosRango.slice(0, 300).map((r) => (
-                            <div key={r.id} style={s.listRow}>
-                              <div style={{ opacity: 0.85, fontWeight: 800 }}>
-                                {r.fecha} — {r.entrada || "--:--:--"} → {r.salida || "--:--:--"}
+                          {porDiaRangoUsuario.map((d) => (
+                            <div key={d.fecha} style={s.listRow}>
+                              <div style={{ fontWeight: 950, marginBottom: 6 }}>
+                                {d.fecha} — Total día: {secondsToHHMM(d.totalSeg)}
                               </div>
-                              <div style={{ fontWeight: 900 }}>{tipoBonito(r.tipo)}</div>
-                              <div style={{ opacity: 0.85 }}>
-                                <span style={{ fontWeight: 900 }}>Nota:</span> {r.nota ? r.nota : "-"}
-                              </div>
+
+                              {d.items
+                                .slice()
+                                .sort((a, b) => (a.entrada < b.entrada ? 1 : -1))
+                                .map((r) => (
+                                  <div
+                                    key={r.id}
+                                    style={{ padding: "6px 0", borderTop: "1px solid rgba(0,0,0,0.06)" }}
+                                  >
+                                    <div style={{ opacity: 0.85, fontWeight: 800 }}>
+                                      {r.entrada || "--:--:--"} → {r.salida || "--:--:--"} ({" "}
+                                      {secondsToHHMM(tramoSegundos(r))} )
+                                    </div>
+                                    <div style={{ fontWeight: 900 }}>{tipoBonito(r.tipo)}</div>
+                                    <div style={{ opacity: 0.85 }}>
+                                      <span style={{ fontWeight: 900 }}>Nota:</span> {r.nota ? r.nota : "-"}
+                                    </div>
+                                  </div>
+                                ))}
                             </div>
                           ))}
                         </div>
@@ -825,6 +934,7 @@ function AppInner() {
         </div>
       </div>
 
+      {/* MODAL RECUPERAR */}
       {showRecover && (
         <Modal title="Recuperar contraseña" onClose={() => setShowRecover(false)}>
           <div style={{ fontWeight: 800, opacity: 0.8, marginBottom: 10 }}>
@@ -845,6 +955,7 @@ function AppInner() {
         </Modal>
       )}
 
+      {/* MODAL RESET PASS */}
       {recoveryMode && (
         <Modal title="Restablecer contraseña" onClose={cerrarRecoverySinGuardar} closeText="Cerrar">
           <div style={{ fontWeight: 800, opacity: 0.8, marginBottom: 10 }}>
@@ -879,29 +990,34 @@ function AppInner() {
         </Modal>
       )}
 
+      {/* MODAL PRIVACIDAD */}
       {showPrivacidad && (
         <Modal title="Aviso de privacidad" onClose={() => setShowPrivacidad(false)}>
           <div style={{ lineHeight: 1.5 }}>
             <div style={{ fontWeight: 950, marginBottom: 6 }}>{EMPRESA.nombre}</div>
-            <div><b>CIF:</b> {EMPRESA.cif}</div>
-            <div><b>Domicilio:</b> {EMPRESA.direccion}</div>
-            <div><b>Email:</b> {EMPRESA.email}</div>
+            <div>
+              <b>CIF:</b> {EMPRESA.cif}
+            </div>
+            <div>
+              <b>Domicilio:</b> {EMPRESA.direccion}
+            </div>
+            <div>
+              <b>Email:</b> {EMPRESA.email}
+            </div>
 
             <div style={{ marginTop: 12, fontWeight: 900 }}>Finalidad</div>
             <div>
-              Gestión del control horario y registro de jornada laboral (entradas y salidas), incluyendo
-              notas asociadas al fichaje cuando el usuario las añada.
+              Gestión del control horario y registro de jornada laboral (entradas y salidas), incluyendo notas asociadas
+              al fichaje cuando el usuario las añada.
             </div>
 
             <div style={{ marginTop: 12, fontWeight: 900 }}>Base legal</div>
-            <div>
-              Cumplimiento de obligaciones legales en materia laboral y gestión de la relación laboral.
-            </div>
+            <div>Cumplimiento de obligaciones legales en materia laboral y gestión de la relación laboral.</div>
 
             <div style={{ marginTop: 12, fontWeight: 900 }}>Conservación</div>
             <div>
-              Los registros se conservarán durante el tiempo legalmente exigible y el necesario para atender
-              posibles responsabilidades.
+              Los registros se conservarán durante el tiempo legalmente exigible y el necesario para atender posibles
+              responsabilidades.
             </div>
 
             <div style={{ marginTop: 12, fontWeight: 900 }}>Derechos</div>
@@ -915,14 +1031,7 @@ function AppInner() {
   );
 }
 
-export default function App() {
-  return (
-    <ErrorBoundary>
-      <AppInner />
-    </ErrorBoundary>
-  );
-}
-
+// ---------- Modal ----------
 function Modal({ title, children, onClose, closeText = "Cerrar" }) {
   return (
     <div style={styles.modalOverlay} onMouseDown={onClose}>
@@ -964,7 +1073,12 @@ const styles = {
     flexWrap: "wrap",
   },
   marca: { minWidth: 200 },
-  nombreMarca: { fontSize: 42, lineHeight: 1.0, fontWeight: 950, letterSpacing: -0.5 },
+  nombreMarca: {
+    fontSize: 42,
+    lineHeight: 1.0,
+    fontWeight: 950,
+    letterSpacing: -0.5,
+  },
   brandSub: { fontSize: 22, fontWeight: 800, opacity: 0.95, marginTop: 6 },
   datePill: {
     background: "rgba(255,255,255,0.16)",
@@ -977,7 +1091,13 @@ const styles = {
     boxShadow: "inset 0 1px 0 rgba(255,255,255,0.18)",
   },
   reloj: { marginTop: 16 },
-  clockBig: { fontSize: 64, fontWeight: 950, letterSpacing: -1, lineHeight: 1.0, marginTop: 6 },
+  clockBig: {
+    fontSize: 64,
+    fontWeight: 950,
+    letterSpacing: -1,
+    lineHeight: 1.0,
+    marginTop: 6,
+  },
   statusPill: {
     marginTop: 16,
     background: "rgba(255,255,255,0.14)",
@@ -1091,7 +1211,14 @@ const styles = {
     fontWeight: 950,
     color: "#7f1d1d",
   },
-  userRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" },
+
+  userRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    flexWrap: "wrap",
+  },
   userPill: {
     flex: "1 1 auto",
     display: "flex",
@@ -1126,16 +1253,33 @@ const styles = {
     whiteSpace: "nowrap",
     flex: "0 0 auto",
   },
+
   hr: { height: 1, background: "rgba(0,0,0,0.08)", margin: "14px 0" },
   label: { fontSize: 18, fontWeight: 950, color: "#374151", marginTop: 6 },
   sectionTitle: { fontSize: 26, fontWeight: 950, color: "#111827", marginBottom: 8 },
   list: { display: "flex", flexDirection: "column", gap: 10 },
-  listRow: { borderRadius: 18, border: "2px solid rgba(0,0,0,0.06)", padding: "12px 14px", background: "#fbfbfb" },
+  listRow: {
+    borderRadius: 18,
+    border: "2px solid rgba(0,0,0,0.06)",
+    padding: "12px 14px",
+    background: "#fbfbfb",
+  },
   bottomBar: { display: "flex", gap: 12, marginTop: 14, flexWrap: "wrap" },
-  btnSoft: { flex: 1, minWidth: 180, borderRadius: 22, padding: "16px 18px", fontSize: 18, fontWeight: 950, border: "2px solid rgba(0,0,0,0.08)", background: "#f6f6f6" },
+  btnSoft: {
+    flex: 1,
+    minWidth: 180,
+    borderRadius: 22,
+    padding: "16px 18px",
+    fontSize: 18,
+    fontWeight: 950,
+    border: "2px solid rgba(0,0,0,0.08)",
+    background: "#f6f6f6",
+  },
   filters: { display: "flex", gap: 12, flexWrap: "wrap" },
   filterCol: { flex: 1, minWidth: 160 },
   filterLabel: { fontWeight: 950, opacity: 0.8, marginBottom: 6 },
+
+  // Modal
   modalOverlay: {
     position: "fixed",
     inset: 0,
@@ -1154,7 +1298,21 @@ const styles = {
     padding: 16,
     boxShadow: "0 18px 40px rgba(0,0,0,0.22)",
   },
-  modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 10 },
+  modalHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 10,
+  },
   modalTitle: { fontSize: 28, fontWeight: 950, color: "#111827" },
-  modalClose: { borderRadius: 999, padding: "10px 14px", border: "2px solid rgba(0,0,0,0.10)", background: "white", fontWeight: 950, color: "#2563eb" },
+  modalClose: {
+    borderRadius: 999,
+    padding: "10px 14px",
+    border: "2px solid rgba(0,0,0,0.10)",
+    background: "white",
+    fontWeight: 950,
+    color: "#2563eb",
+  },
 };
+
