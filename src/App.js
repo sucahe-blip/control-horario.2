@@ -73,6 +73,56 @@ function fromInputDate(str) {
   return dt;
 }
 
+// ---------- helpers MES (nuevo) ----------
+function monthKeyNow() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`; // YYYY-MM
+}
+
+function monthLabel(monthKey) {
+  // monthKey: YYYY-MM
+  if (!monthKey || !/^\d{4}-\d{2}$/.test(monthKey)) return monthKey || "";
+  const [y, m] = monthKey.split("-").map((x) => parseInt(x, 10));
+  const nombres = [
+    "Enero",
+    "Febrero",
+    "Marzo",
+    "Abril",
+    "Mayo",
+    "Junio",
+    "Julio",
+    "Agosto",
+    "Septiembre",
+    "Octubre",
+    "Noviembre",
+    "Diciembre",
+  ];
+  return `${nombres[(m || 1) - 1]} ${y}`;
+}
+
+function monthToRange(monthKey) {
+  // monthKey: YYYY-MM -> { desdeISO, hastaISO }
+  if (!monthKey || !/^\d{4}-\d{2}$/.test(monthKey)) {
+    const today = new Date();
+    const mk = `${today.getFullYear()}-${pad2(today.getMonth() + 1)}`;
+    return monthToRange(mk);
+  }
+  const [y, m] = monthKey.split("-").map((x) => parseInt(x, 10));
+  const first = new Date(y, m - 1, 1);
+  const last = new Date(y, m, 0); // día 0 del siguiente mes = último del mes actual
+  return { desdeISO: toInputDate(first), hastaISO: toInputDate(last) };
+}
+
+function buildLastMonths(count = 12) {
+  const out = [];
+  const now = new Date();
+  for (let i = 0; i < count; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    out.push(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}`);
+  }
+  return out; // [YYYY-MM,...] desde actual hacia atrás
+}
+
 // ---------- helpers horas ----------
 function timeToSeconds(t) {
   if (!t) return null;
@@ -121,21 +171,6 @@ function agruparPorFecha(registros) {
   return Array.from(map.entries())
     .sort((a, b) => (a[0] < b[0] ? 1 : -1))
     .map(([fecha, data]) => ({ fecha, ...data }));
-}
-
-// ✅ NUEVO: agrupar por mes (YYYY-MM) para resumen mensual
-function agruparPorMes(registros) {
-  const map = new Map(); // "YYYY-MM" -> { totalSeg }
-  for (const r of registros || []) {
-    const key = (r.fecha && String(r.fecha).slice(0, 7)) || "Sin mes"; // 2026-01
-    const cur = map.get(key) || { totalSeg: 0 };
-    cur.totalSeg += tramoSegundos(r);
-    map.set(key, cur);
-  }
-
-  return Array.from(map.entries())
-    .sort((a, b) => (a[0] < b[0] ? 1 : -1)) // desc
-    .map(([mes, data]) => ({ mes, ...data }));
 }
 
 // ---------- CSV ----------
@@ -196,9 +231,21 @@ export default function App() {
   const [registrosRango, setRegistrosRango] = useState([]);
   const [nota, setNota] = useState("");
 
-  // Filtros rango
+  // Filtros rango (por defecto HOY)
   const [desde, setDesde] = useState(toInputDate(new Date()));
   const [hasta, setHasta] = useState(toInputDate(new Date()));
+
+  // Mes rápido (nuevo)
+  const [mesSel, setMesSel] = useState(monthKeyNow());
+  const mesesRapidos = useMemo(() => buildLastMonths(12), []);
+
+  function aplicarMes(monthKey) {
+    const mk = monthKey || monthKeyNow();
+    const { desdeISO, hastaISO } = monthToRange(mk);
+    setMesSel(mk);
+    setDesde(desdeISO);
+    setHasta(hastaISO);
+  }
 
   // Inspector/admin
   const [empleados, setEmpleados] = useState([]);
@@ -428,9 +475,27 @@ export default function App() {
     [registrosInspector]
   );
 
-  // ✅ NUEVO: resumen mensual por meses
-  const porMesRangoUsuario = useMemo(() => agruparPorMes(registrosRango), [registrosRango]);
-  const porMesInspector = useMemo(() => agruparPorMes(registrosInspector), [registrosInspector]);
+  // --------- Totales mensuales (nuevo) ----------
+  function monthKeyFromFechaISO(fechaISO) {
+    if (!fechaISO || !/^\d{4}-\d{2}-\d{2}$/.test(fechaISO)) return null;
+    return fechaISO.slice(0, 7); // YYYY-MM
+  }
+
+  function agruparPorMes(registros) {
+    const map = new Map(); // YYYY-MM -> { totalSeg, itemsCount }
+    for (const r of registros || []) {
+      const mk = monthKeyFromFechaISO(r.fecha);
+      if (!mk) continue;
+      const cur = map.get(mk) || { monthKey: mk, totalSeg: 0, itemsCount: 0 };
+      cur.totalSeg += tramoSegundos(r, { contarAbiertosHoyHastaAhora: false });
+      cur.itemsCount += 1;
+      map.set(mk, cur);
+    }
+    return Array.from(map.values()).sort((a, b) => (a.monthKey < b.monthKey ? 1 : -1));
+  }
+
+  const mesesUsuario = useMemo(() => agruparPorMes(registrosRango), [registrosRango]);
+  const mesesInspector = useMemo(() => agruparPorMes(registrosInspector), [registrosInspector]);
 
   // --------- Jornada partida: varias filas mismo día ---------
   async function iniciarJornada() {
@@ -732,7 +797,9 @@ export default function App() {
                   <span style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {nombreVisible}
                   </span>
-                  {(isInspector || isAdmin) && <span style={s.roleBadge}>{isAdmin ? "ADMIN" : "INSPECCIÓN"}</span>}
+                  {(isInspector || isAdmin) && (
+                    <span style={s.roleBadge}>{isAdmin ? "ADMIN" : "INSPECCIÓN"}</span>
+                  )}
                 </div>
 
                 <button style={s.btnOut} onClick={salir}>
@@ -777,8 +844,8 @@ export default function App() {
                         <div key={r.id} style={s.listRow}>
                           <div style={{ fontWeight: 900 }}>{tipoBonito(r.tipo)}</div>
                           <div style={{ opacity: 0.85, fontWeight: 800 }}>
-                            {r.fecha} — {r.entrada || "--:--:--"} → {r.salida || "--:--:--"} ({" "}
-                            {secondsToHHMM(tramoSegundos(r))} )
+                            {r.fecha} — {r.entrada || "--:--:--"} → {r.salida || "--:--:--"}{" "}
+                            ( {secondsToHHMM(tramoSegundos(r))} )
                           </div>
                           <div style={{ opacity: 0.85 }}>
                             <span style={{ fontWeight: 900 }}>Nota:</span> {r.nota ? r.nota : "-"}
@@ -803,14 +870,68 @@ export default function App() {
                 <>
                   <div style={s.sectionTitle}>Histórico</div>
 
+                  {/* Mes rápido (nuevo) */}
+                  <div style={{ marginTop: 6 }}>
+                    <div style={s.filterLabel}>Mes (pincha para rellenar Desde/Hasta)</div>
+
+                    <div style={s.monthPickerRow}>
+                      <input
+                        type="month"
+                        value={mesSel}
+                        onChange={(e) => aplicarMes(e.target.value)}
+                        style={s.monthInput}
+                      />
+                      <button
+                        style={s.monthBtn}
+                        type="button"
+                        onClick={() => aplicarMes(monthKeyNow())}
+                      >
+                        Mes actual
+                      </button>
+                    </div>
+
+                    <div style={s.monthChips}>
+                      {mesesRapidos.map((mk) => (
+                        <button
+                          key={mk}
+                          type="button"
+                          onClick={() => aplicarMes(mk)}
+                          style={mk === mesSel ? s.monthChipActive : s.monthChip}
+                        >
+                          {monthLabel(mk)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   <div style={s.filters}>
                     <div style={s.filterCol}>
                       <div style={s.filterLabel}>Desde</div>
-                      <input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} style={s.input} />
+                      <input
+                        type="date"
+                        value={desde}
+                        onChange={(e) => {
+                          setDesde(e.target.value);
+                          // si el usuario cambia manualmente, no forzamos mesSel,
+                          // pero si coincide el mes, lo reflejamos:
+                          const mk = (e.target.value || "").slice(0, 7);
+                          if (/^\d{4}-\d{2}$/.test(mk)) setMesSel(mk);
+                        }}
+                        style={s.input}
+                      />
                     </div>
                     <div style={s.filterCol}>
                       <div style={s.filterLabel}>Hasta</div>
-                      <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} style={s.input} />
+                      <input
+                        type="date"
+                        value={hasta}
+                        onChange={(e) => {
+                          setHasta(e.target.value);
+                          const mk = (e.target.value || "").slice(0, 7);
+                          if (/^\d{4}-\d{2}$/.test(mk)) setMesSel(mk);
+                        }}
+                        style={s.input}
+                      />
                     </div>
                   </div>
 
@@ -858,30 +979,25 @@ export default function App() {
                         </button>
                       </div>
 
-                      {/* ✅ NUEVO: Resumen mensual (admin/inspector) */}
-                      <div style={s.hr} />
-                      <div style={s.sectionTitle}>Resumen mensual</div>
-
-                      {!registrosInspector?.length ? (
-                        <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin datos para resumir)</div>
-                      ) : (
-                        <div style={s.list}>
-                          {porMesInspector.map((m) => (
-                            <div key={m.mes} style={s.listRow}>
-                              <div style={{ fontWeight: 950 }}>
-                                {m.mes} — Total mes: {secondsToHHMM(m.totalSeg)}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
                       <div style={s.hr} />
                       <div style={s.sectionTitle}>Resultados</div>
 
                       <div style={{ fontWeight: 950, opacity: 0.85, marginBottom: 10 }}>
                         Total rango: {secondsToHHMM(totalInspectorSeg)}
                       </div>
+
+                      {/* Totales mensuales (nuevo) */}
+                      {mesesInspector.length > 0 && (
+                        <div style={s.monthTotalsBox}>
+                          <div style={{ fontWeight: 950, marginBottom: 8 }}>Totales por mes</div>
+                          {mesesInspector.map((m) => (
+                            <div key={m.monthKey} style={s.monthTotalRow}>
+                              <div style={{ fontWeight: 900 }}>{monthLabel(m.monthKey)}</div>
+                              <div style={{ fontWeight: 950 }}>{secondsToHHMM(m.totalSeg)}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
                       {!registrosInspector?.length ? (
                         <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin resultados en ese rango)</div>
@@ -928,24 +1044,18 @@ export default function App() {
                         Total rango: {secondsToHHMM(totalRangoUsuarioSeg)}
                       </div>
 
-                      {/* ✅ NUEVO: Resumen mensual (empleado normal) */}
-                      <div style={s.sectionTitle}>Resumen mensual</div>
-
-                      {!registrosRango?.length ? (
-                        <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin datos para resumir)</div>
-                      ) : (
-                        <div style={s.list}>
-                          {porMesRangoUsuario.map((m) => (
-                            <div key={m.mes} style={s.listRow}>
-                              <div style={{ fontWeight: 950 }}>
-                                {m.mes} — Total mes: {secondsToHHMM(m.totalSeg)}
-                              </div>
+                      {/* Totales mensuales (nuevo) */}
+                      {mesesUsuario.length > 0 && (
+                        <div style={s.monthTotalsBox}>
+                          <div style={{ fontWeight: 950, marginBottom: 8 }}>Totales por mes</div>
+                          {mesesUsuario.map((m) => (
+                            <div key={m.monthKey} style={s.monthTotalRow}>
+                              <div style={{ fontWeight: 900 }}>{monthLabel(m.monthKey)}</div>
+                              <div style={{ fontWeight: 950 }}>{secondsToHHMM(m.totalSeg)}</div>
                             </div>
                           ))}
                         </div>
                       )}
-
-                      <div style={s.hr} />
 
                       {!registrosRango?.length ? (
                         <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin resultados en ese rango)</div>
@@ -1332,6 +1442,69 @@ const styles = {
   filters: { display: "flex", gap: 12, flexWrap: "wrap" },
   filterCol: { flex: 1, minWidth: 160 },
   filterLabel: { fontWeight: 950, opacity: 0.8, marginBottom: 6 },
+
+  // Mes rápido (nuevo)
+  monthPickerRow: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" },
+  monthInput: {
+    width: "100%",
+    maxWidth: 220,
+    borderRadius: 18,
+    border: "2px solid rgba(0,0,0,0.10)",
+    padding: "12px 14px",
+    fontSize: 16,
+    outline: "none",
+    boxSizing: "border-box",
+    background: "white",
+    fontWeight: 900,
+  },
+  monthBtn: {
+    borderRadius: 18,
+    padding: "12px 14px",
+    fontSize: 14,
+    fontWeight: 950,
+    border: "2px solid rgba(0,0,0,0.10)",
+    background: "white",
+    whiteSpace: "nowrap",
+  },
+  monthChips: {
+    marginTop: 10,
+    display: "flex",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+  monthChip: {
+    borderRadius: 999,
+    padding: "10px 12px",
+    fontSize: 13,
+    fontWeight: 950,
+    border: "2px solid rgba(0,0,0,0.08)",
+    background: "rgba(0,0,0,0.02)",
+  },
+  monthChipActive: {
+    borderRadius: 999,
+    padding: "10px 12px",
+    fontSize: 13,
+    fontWeight: 950,
+    border: "2px solid rgba(179,0,0,0.35)",
+    background: "rgba(179,0,0,0.08)",
+    color: "#7f1d1d",
+  },
+
+  // Totales por mes (nuevo)
+  monthTotalsBox: {
+    marginTop: 12,
+    borderRadius: 18,
+    border: "2px solid rgba(0,0,0,0.06)",
+    background: "#ffffff",
+    padding: "12px 14px",
+  },
+  monthTotalRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    padding: "8px 0",
+    borderTop: "1px solid rgba(0,0,0,0.06)",
+  },
 
   // Modal
   modalOverlay: {
