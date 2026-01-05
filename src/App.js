@@ -440,7 +440,7 @@ export default function App() {
       setRegistrosRango([]);
       if (tab !== "historico") return;
       if (!perfil?.empleado_id) return;
-      if (isInspector || isAdmin) return; // ellos usan Buscar
+      if (isInspector || isAdmin) return;
 
       const d = fromInputDate(desde);
       const h = fromInputDate(hasta);
@@ -485,7 +485,6 @@ export default function App() {
 
       setCargandoScopeRegistros(true);
 
-      // OJO: aquí pedimos SOLO campos necesarios para totales/años (más ligero)
       let q = supabase
         .from("registros")
         .select("id,empleado_id,fecha,entrada,salida,tipo,nota")
@@ -518,7 +517,6 @@ export default function App() {
       const resumen = years.map((y) => ({ year: y, totalSeg: mapYear.get(y) || 0 }));
       setResumenAnual(resumen);
 
-      // Si el año seleccionado no existe, ponemos el más reciente (o el año actual si no hay)
       if (years.length > 0 && !years.includes(Number(anioSel))) {
         setAnioSel(years[0]);
       }
@@ -528,7 +526,8 @@ export default function App() {
     }
 
     cargarScopeRegistros();
-  }, [tab, session?.user?.id, isAdmin, isInspector, perfil?.empleado_id, empleadoSel, anioSel]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, session?.user?.id, isAdmin, isInspector, perfil?.empleado_id, empleadoSel]);
 
   // Totales mensuales del año seleccionado (calculado desde scopeRegistros)
   const totalesMensualesSeg = useMemo(() => {
@@ -729,6 +728,34 @@ export default function App() {
     setMsg({ type: "ok", text: "Cancelado. No se ha cambiado la contraseña." });
   }
 
+  // ------- Mes/año: aplicar rango -------
+  function aplicarMesAlRango(year, monthIndex) {
+    const dISO = firstDayOfMonthISO(year, monthIndex);
+    const hISO = lastDayOfMonthISO(year, monthIndex);
+    setDesde(dISO);
+    setHasta(hISO);
+  }
+  function onClickMes(monthIndex) {
+    setMesSel(String(monthIndex));
+    aplicarMesAlRango(Number(anioSel), monthIndex);
+  }
+  function onSelectorMesChange(val) {
+    setMesSel(val);
+    if (val === "") return;
+    const mi = parseInt(val, 10);
+    if (Number.isNaN(mi)) return;
+    aplicarMesAlRango(Number(anioSel), mi);
+  }
+  function onSelectorAnioChange(val) {
+    const y = parseInt(val, 10);
+    if (Number.isNaN(y)) return;
+    setAnioSel(y);
+    if (mesSel !== "") {
+      const mi = parseInt(mesSel, 10);
+      if (!Number.isNaN(mi)) aplicarMesAlRango(y, mi);
+    }
+  }
+
   // Nombre visible
   const nombreVisible = useMemo(() => {
     const n = (empleado?.nombre || "").trim();
@@ -742,39 +769,6 @@ export default function App() {
   const fechaLarga = useMemo(() => fmtFechaLarga(ahora), [ahora]);
   const horaGrande = useMemo(() => fmtHora(ahora), [ahora]);
 
-  // ------- Mes/año: aplicar rango -------
-  function aplicarMesAlRango(year, monthIndex) {
-    const dISO = firstDayOfMonthISO(year, monthIndex);
-    const hISO = lastDayOfMonthISO(year, monthIndex); // <- arreglo "Hasta"
-    setDesde(dISO);
-    setHasta(hISO);
-  }
-
-  function onClickMes(monthIndex) {
-    setMesSel(String(monthIndex));
-    aplicarMesAlRango(Number(anioSel), monthIndex);
-  }
-
-  function onSelectorMesChange(val) {
-    setMesSel(val);
-    if (val === "") return;
-    const mi = parseInt(val, 10);
-    if (Number.isNaN(mi)) return;
-    aplicarMesAlRango(Number(anioSel), mi);
-  }
-
-  function onSelectorAnioChange(val) {
-    const y = parseInt(val, 10);
-    if (Number.isNaN(y)) return;
-    setAnioSel(y);
-
-    // si hay mes seleccionado, mantenemos mes y actualizamos rango para ese año
-    if (mesSel !== "") {
-      const mi = parseInt(mesSel, 10);
-      if (!Number.isNaN(mi)) aplicarMesAlRango(y, mi);
-    }
-  }
-
   // ------- Export CSV MES -------
   async function exportarCSVDelMes() {
     setMsg(null);
@@ -785,7 +779,6 @@ export default function App() {
       const mi = parseInt(mesSel, 10);
       if (!Number.isNaN(mi)) monthIndex = mi;
     } else {
-      // si no hay mes seleccionado, intentamos deducir del "desde"
       const d = fromInputDate(desde);
       monthIndex = d.getMonth();
     }
@@ -798,7 +791,6 @@ export default function App() {
     const desdeM = firstDayOfMonthISO(year, monthIndex);
     const hastaM = lastDayOfMonthISO(year, monthIndex);
 
-    // Si ADMIN/INSPECTOR y (Todos) => export agrupado por empleado (en el mismo CSV)
     const esAdminTodos = (isAdmin || isInspector) && !empleadoSel;
 
     let q = supabase
@@ -837,9 +829,8 @@ export default function App() {
 
     const registros = data || [];
 
-    // CSV agrupado por empleado (solo cuando ADMIN/INSPECTOR + Todos)
     if (esAdminTodos) {
-      const mapEmp = new Map(); // empleado_id -> registros[]
+      const mapEmp = new Map();
       for (const r of registros) {
         const key = r.empleado_id || "sin_empleado";
         const arr = mapEmp.get(key) || [];
@@ -864,6 +855,21 @@ export default function App() {
         ["AGRUPADO POR EMPLEADO"],
       ];
 
+      // Resumen inicial "Empleado -> Total"
+      rows.push([]);
+      rows.push(["RESUMEN"]);
+      rows.push(["Empleado", "Total"]);
+      for (const empId of empleadosOrdenados) {
+        const regsEmp = mapEmp.get(empId) || [];
+        const empNom = nombreEmpleadoById(empleados, empId);
+        const totalEmp = regsEmp.reduce(
+          (acc, r) => acc + tramoSegundos(r, { contarAbiertosHoyHastaAhora: false }),
+          0
+        );
+        rows.push([empNom, secondsToHHMM(totalEmp)]);
+      }
+
+      // Detalle por empleado
       for (const empId of empleadosOrdenados) {
         const regsEmp = mapEmp.get(empId) || [];
         const empNom = nombreEmpleadoById(empleados, empId);
@@ -895,7 +901,6 @@ export default function App() {
       return;
     }
 
-    // CSV normal (un empleado / tu usuario)
     const totalMesSeg = registros.reduce((acc, r) => acc + tramoSegundos(r, { contarAbiertosHoyHastaAhora: false }), 0);
 
     const rows = [
@@ -922,7 +927,7 @@ export default function App() {
     setMsg({ type: "ok", text: `CSV del mes (${MESES_ES[monthIndex]} ${year}) exportado ✅` });
   }
 
-  // ------- Export CSV AÑO (igual que antes, con resumen mensual) -------
+  // ------- Export CSV AÑO -------
   async function exportarCSVDelAnio() {
     setMsg(null);
     const year = Number(anioSel);
@@ -991,7 +996,6 @@ export default function App() {
 
     const filename = `control_horario_${year}_ANIO_${labelEmpleado}.csv`;
     downloadCSV(filename, rows);
-
     setMsg({ type: "ok", text: `CSV del año (${year}) exportado ✅` });
   }
 
@@ -1778,7 +1782,6 @@ const styles = {
   filterCol: { flex: 1, minWidth: 160 },
   filterLabel: { fontWeight: 950, opacity: 0.8, marginBottom: 6 },
 
-  // Bloques resumen
   monthBox: {
     borderRadius: 18,
     border: "2px solid rgba(0,0,0,0.06)",
@@ -1865,7 +1868,6 @@ const styles = {
     cursor: "pointer",
   },
 
-  // Modal
   modalOverlay: {
     position: "fixed",
     inset: 0,
