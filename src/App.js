@@ -91,12 +91,6 @@ function secondsToHHMM(totalSeconds) {
 }
 
 function tramoSegundos(r, opts = { contarAbiertosHoyHastaAhora: true }) {
-  // ===== V2: si viene de una VIEW con horas_calculadas y el tramo está cerrado, úsalo como fuente de verdad =====
-  if (r?.horas_calculadas != null && r?.salida != null) {
-    const h = Number(r.horas_calculadas);
-    if (!Number.isNaN(h)) return Math.max(0, Math.round(h * 3600));
-  }
-
   const en = timeToSeconds(r.entrada);
   if (en == null) return 0;
 
@@ -127,6 +121,21 @@ function agruparPorFecha(registros) {
   return Array.from(map.entries())
     .sort((a, b) => (a[0] < b[0] ? 1 : -1))
     .map(([fecha, data]) => ({ fecha, ...data }));
+}
+
+// ✅ NUEVO: agrupar por mes (YYYY-MM) para resumen mensual
+function agruparPorMes(registros) {
+  const map = new Map(); // "YYYY-MM" -> { totalSeg }
+  for (const r of registros || []) {
+    const key = (r.fecha && String(r.fecha).slice(0, 7)) || "Sin mes"; // 2026-01
+    const cur = map.get(key) || { totalSeg: 0 };
+    cur.totalSeg += tramoSegundos(r);
+    map.set(key, cur);
+  }
+
+  return Array.from(map.entries())
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1)) // desc
+    .map(([mes, data]) => ({ mes, ...data }));
 }
 
 // ---------- CSV ----------
@@ -190,17 +199,6 @@ export default function App() {
   // Filtros rango
   const [desde, setDesde] = useState(toInputDate(new Date()));
   const [hasta, setHasta] = useState(toInputDate(new Date()));
-
-  // ===== V2 (staging): Totales desde VIEWS =====
-  const [mesV2, setMesV2] = useState(() => {
-    const hoy = new Date();
-    const y = hoy.getFullYear();
-    const m = String(hoy.getMonth() + 1).padStart(2, "0");
-    return `${y}-${m}-01`; // formato que usa view_totales_mensuales
-  });
-
-  const [totalesDiariosV2, setTotalesDiariosV2] = useState([]); // [{fecha, horas_dia}]
-  const [totalMesV2, setTotalMesV2] = useState(0); // number
 
   // Inspector/admin
   const [empleados, setEmpleados] = useState([]);
@@ -323,45 +321,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.user?.id, perfil?.empleado_id]);
 
-  // ===== V2 helpers: totales desde views =====
-  async function cargarTotalesDiariosV2(empleadoId, desdeISO, hastaISO) {
-    const { data, error } = await supabase
-      .from("view_totales_diarios")
-      .select("fecha, horas_dia")
-      .eq("empleado_id", empleadoId)
-      .gte("fecha", desdeISO)
-      .lte("fecha", hastaISO)
-      .order("fecha", { ascending: false });
-
-    if (error) {
-      setMsg({ type: "err", text: `Error cargando totales diarios V2: ${error.message}` });
-      return [];
-    }
-    return data || [];
-  }
-
-  async function cargarTotalMensualV2(empleadoId, mesISO) {
-    const { data, error } = await supabase
-      .from("view_totales_mensuales")
-      .select("horas_mes")
-      .eq("empleado_id", empleadoId)
-      .eq("mes", mesISO)
-      .maybeSingle();
-
-    if (error) {
-      setMsg({ type: "err", text: `Error cargando total mensual V2: ${error.message}` });
-      return 0;
-    }
-    return data?.horas_mes ?? 0;
-  }
-
   // Histórico usuario (rango)
   useEffect(() => {
     async function cargarRangoUsuario() {
       setRegistrosRango([]);
-      setTotalesDiariosV2([]);
-      setTotalMesV2(0);
-
       if (tab !== "historico") return;
       if (!perfil?.empleado_id) return;
 
@@ -371,9 +334,8 @@ export default function App() {
       const desdeISO = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
       const hastaISO = `${h.getFullYear()}-${pad2(h.getMonth() + 1)}-${pad2(h.getDate())}`;
 
-      // ✅ V2: el histórico del usuario lee de la VIEW con horas calculadas (solo tramos cerrados)
       const { data, error } = await supabase
-        .from("view_registros_con_horas")
+        .from("registros")
         .select("*")
         .eq("empleado_id", perfil.empleado_id)
         .gte("fecha", desdeISO)
@@ -386,18 +348,10 @@ export default function App() {
         return;
       }
       setRegistrosRango(data || []);
-
-      // ===== V2: totales diarios y mensual desde views =====
-      const td = await cargarTotalesDiariosV2(perfil.empleado_id, desdeISO, hastaISO);
-      setTotalesDiariosV2(td);
-
-      const tm = await cargarTotalMensualV2(perfil.empleado_id, mesV2);
-      setTotalMesV2(tm);
     }
 
     cargarRangoUsuario();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, perfil?.empleado_id, desde, hasta, mesV2]);
+  }, [tab, perfil?.empleado_id, desde, hasta]);
 
   // Inspector/admin: cargar empleados
   useEffect(() => {
@@ -473,6 +427,10 @@ export default function App() {
     () => (registrosInspector || []).reduce((acc, r) => acc + tramoSegundos(r), 0),
     [registrosInspector]
   );
+
+  // ✅ NUEVO: resumen mensual por meses
+  const porMesRangoUsuario = useMemo(() => agruparPorMes(registrosRango), [registrosRango]);
+  const porMesInspector = useMemo(() => agruparPorMes(registrosInspector), [registrosInspector]);
 
   // --------- Jornada partida: varias filas mismo día ---------
   async function iniciarJornada() {
@@ -774,9 +732,7 @@ export default function App() {
                   <span style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {nombreVisible}
                   </span>
-                  {(isInspector || isAdmin) && (
-                    <span style={s.roleBadge}>{isAdmin ? "ADMIN" : "INSPECCIÓN"}</span>
-                  )}
+                  {(isInspector || isAdmin) && <span style={s.roleBadge}>{isAdmin ? "ADMIN" : "INSPECCIÓN"}</span>}
                 </div>
 
                 <button style={s.btnOut} onClick={salir}>
@@ -821,8 +777,8 @@ export default function App() {
                         <div key={r.id} style={s.listRow}>
                           <div style={{ fontWeight: 900 }}>{tipoBonito(r.tipo)}</div>
                           <div style={{ opacity: 0.85, fontWeight: 800 }}>
-                            {r.fecha} — {r.entrada || "--:--:--"} → {r.salida || "--:--:--"}{" "}
-                            ( {secondsToHHMM(tramoSegundos(r))} )
+                            {r.fecha} — {r.entrada || "--:--:--"} → {r.salida || "--:--:--"} ({" "}
+                            {secondsToHHMM(tramoSegundos(r))} )
                           </div>
                           <div style={{ opacity: 0.85 }}>
                             <span style={{ fontWeight: 900 }}>Nota:</span> {r.nota ? r.nota : "-"}
@@ -856,60 +812,6 @@ export default function App() {
                       <div style={s.filterLabel}>Hasta</div>
                       <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} style={s.input} />
                     </div>
-                  </div>
-
-                  {/* ===== V2: Resumen mensual + Totales diarios desde VIEWS (solo staging) ===== */}
-                  <div
-                    style={{
-                      marginTop: 12,
-                      padding: "12px 14px",
-                      borderRadius: 18,
-                      border: "2px solid rgba(0,0,0,0.06)",
-                      background: "#fbfbfb",
-                    }}
-                  >
-                    <div style={{ fontWeight: 950, marginBottom: 8 }}>Resumen mensual (V2)</div>
-
-                    <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-                      <input
-                        type="month"
-                        value={mesV2.slice(0, 7)}
-                        onChange={(e) => setMesV2(e.target.value + "-01")}
-                        style={s.input}
-                      />
-                      <div style={{ fontWeight: 950 }}>Total mes: {Number(totalMesV2 || 0).toFixed(2)} h</div>
-                    </div>
-                  </div>
-
-                  <div
-                    style={{
-                      marginTop: 12,
-                      padding: "12px 14px",
-                      borderRadius: 18,
-                      border: "2px solid rgba(0,0,0,0.06)",
-                      background: "#fbfbfb",
-                    }}
-                  >
-                    <div style={{ fontWeight: 950, marginBottom: 8 }}>Totales diarios (V2)</div>
-
-                    {!totalesDiariosV2?.length ? (
-                      <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin datos diarios en ese rango)</div>
-                    ) : (
-                      totalesDiariosV2.map((d) => (
-                        <div
-                          key={d.fecha}
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            padding: "6px 0",
-                            borderTop: "1px solid rgba(0,0,0,0.06)",
-                          }}
-                        >
-                          <div style={{ fontWeight: 900 }}>{d.fecha}</div>
-                          <div style={{ fontWeight: 950 }}>{Number(d.horas_dia || 0).toFixed(2)} h</div>
-                        </div>
-                      ))
-                    )}
                   </div>
 
                   {(isInspector || isAdmin) && (
@@ -955,6 +857,24 @@ export default function App() {
                           Exportar CSV (Excel)
                         </button>
                       </div>
+
+                      {/* ✅ NUEVO: Resumen mensual (admin/inspector) */}
+                      <div style={s.hr} />
+                      <div style={s.sectionTitle}>Resumen mensual</div>
+
+                      {!registrosInspector?.length ? (
+                        <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin datos para resumir)</div>
+                      ) : (
+                        <div style={s.list}>
+                          {porMesInspector.map((m) => (
+                            <div key={m.mes} style={s.listRow}>
+                              <div style={{ fontWeight: 950 }}>
+                                {m.mes} — Total mes: {secondsToHHMM(m.totalSeg)}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
                       <div style={s.hr} />
                       <div style={s.sectionTitle}>Resultados</div>
@@ -1007,6 +927,25 @@ export default function App() {
                       <div style={{ fontWeight: 950, opacity: 0.85, marginBottom: 10 }}>
                         Total rango: {secondsToHHMM(totalRangoUsuarioSeg)}
                       </div>
+
+                      {/* ✅ NUEVO: Resumen mensual (empleado normal) */}
+                      <div style={s.sectionTitle}>Resumen mensual</div>
+
+                      {!registrosRango?.length ? (
+                        <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin datos para resumir)</div>
+                      ) : (
+                        <div style={s.list}>
+                          {porMesRangoUsuario.map((m) => (
+                            <div key={m.mes} style={s.listRow}>
+                              <div style={{ fontWeight: 950 }}>
+                                {m.mes} — Total mes: {secondsToHHMM(m.totalSeg)}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div style={s.hr} />
 
                       {!registrosRango?.length ? (
                         <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin resultados en ese rango)</div>
