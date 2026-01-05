@@ -4,8 +4,8 @@ import "./style.css";
 
 /**
  * Control horario - Cañizares S.A.
- * Esquema esperado:
  *
+ * Tablas esperadas:
  * public.empleados:  id (uuid), nombre (text), rol (text)
  * public.usuarios:   user_id (uuid), empleado_id (uuid), rol (text), es_admin (bool), es_inspector (bool)
  * public.registros:  id (uuid), empleado_id (uuid), fecha (date), tipo (text), entrada (time), salida (time), nota (text)
@@ -81,44 +81,45 @@ function toInputDate(d) {
 }
 
 function fromInputDate(str) {
-  // str: YYYY-MM-DD
-  const [y, m, d] = String(str || "").split("-").map((v) => parseInt(v, 10));
+  const [y, m, d] = String(str || "")
+    .split("-")
+    .map((v) => parseInt(v, 10));
   const dt = new Date();
   dt.setFullYear(y, (m || 1) - 1, d || 1);
   dt.setHours(0, 0, 0, 0);
   return dt;
 }
 
-function fmtFechaDDMMYYYY(iso) {
-  // iso: YYYY-MM-DD
-  if (!iso || typeof iso !== "string") return iso || "";
-  const [y, m, d] = iso.split("-");
-  if (!y || !m || !d) return iso;
-  return `${d}-${m}-${y}`; // (app pedida: DD-MM-YYYY)
+// Convierte "YYYY-MM-DD" -> "DD-MM-YYYY"
+function fmtFechaDDMMYYYY(isoDate) {
+  if (!isoDate) return "";
+  const s = String(isoDate);
+  // si viene con hora, recortamos
+  const just = s.slice(0, 10);
+  const [y, m, d] = just.split("-");
+  if (!y || !m || !d) return s;
+  return `${d}-${m}-${y}`;
 }
 
-function fmtFechaDDMMYYYYslash(iso) {
-  if (!iso || typeof iso !== "string") return iso || "";
-  const [y, m, d] = iso.split("-");
-  if (!y || !m || !d) return iso;
-  return `${d}/${m}/${y}`; // (si la quieres con /)
+// Para títulos del tipo "DD/MM/YYYY" si lo prefieres en algún sitio (ahora usamos guiones)
+function fmtFechaDDMMYYYYSlash(isoDate) {
+  if (!isoDate) return "";
+  const s = String(isoDate);
+  const just = s.slice(0, 10);
+  const [y, m, d] = just.split("-");
+  if (!y || !m || !d) return s;
+  return `${d}/${m}/${y}`;
 }
 
-function firstDayOfMonthISO(year, month1to12) {
-  return `${year}-${pad2(month1to12)}-01`;
+// Primer y último día del mes (devuelve ISO YYYY-MM-DD)
+function firstDayOfMonthISO(year, monthIndex) {
+  const d = new Date(year, monthIndex, 1);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
-
-function lastDayOfMonthISO(year, month1to12) {
-  // día 0 del mes siguiente = último día del mes actual
-  const last = new Date(year, month1to12, 0);
-  return `${last.getFullYear()}-${pad2(last.getMonth() + 1)}-${pad2(last.getDate())}`;
-}
-
-function yearFromISO(iso) {
-  if (!iso) return new Date().getFullYear();
-  const [y] = String(iso).split("-");
-  const n = parseInt(y, 10);
-  return Number.isFinite(n) ? n : new Date().getFullYear();
+function lastDayOfMonthISO(year, monthIndex) {
+  // día 0 del siguiente mes = último del mes actual
+  const d = new Date(year, monthIndex + 1, 0);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
 // ---------- helpers horas ----------
@@ -172,17 +173,20 @@ function agruparPorFecha(registros) {
 }
 
 function calcularTotalesMensuales(registros, year) {
-  // devuelve array 12 con segundos
-  const arr = new Array(12).fill(0);
+  const tot = new Array(12).fill(0);
   for (const r of registros || []) {
     if (!r?.fecha) continue;
-    const [y, m] = String(r.fecha).split("-");
-    if (parseInt(y, 10) !== year) continue;
-    const mi = parseInt(m, 10);
-    if (!mi || mi < 1 || mi > 12) continue;
-    arr[mi - 1] += tramoSegundos(r, { contarAbiertosHoyHastaAhora: false });
+    const f = String(r.fecha).slice(0, 10);
+    const [yy, mm] = f.split("-");
+    const y = parseInt(yy, 10);
+    const m = parseInt(mm, 10);
+    if (!y || !m) continue;
+    if (y !== Number(year)) continue;
+    const idx = m - 1;
+    if (idx < 0 || idx > 11) continue;
+    tot[idx] += tramoSegundos(r, { contarAbiertosHoyHastaAhora: false });
   }
-  return arr;
+  return tot;
 }
 
 // ---------- CSV ----------
@@ -217,8 +221,8 @@ function calcularEstadoHoy(registrosHoy) {
 }
 
 function nombreEmpleadoById(empleados, id) {
-  const emp = (empleados || []).find((x) => x.id === id);
-  return emp?.nombre || id;
+  const emp = (empleados || []).find((e) => e.id === id);
+  return emp?.nombre || id || "";
 }
 
 // ---------- App ----------
@@ -248,21 +252,21 @@ export default function App() {
   const [registrosRango, setRegistrosRango] = useState([]);
   const [nota, setNota] = useState("");
 
-  // Filtros rango (siempre en YYYY-MM-DD para query)
+  // Filtros rango (inputs "date" requieren YYYY-MM-DD como value)
   const [desde, setDesde] = useState(toInputDate(new Date()));
   const [hasta, setHasta] = useState(toInputDate(new Date()));
-
-  // Año/totales mensuales
-  const [anioTotales, setAnioTotales] = useState(new Date().getFullYear());
-  const [totalesMensualesSeg, setTotalesMensualesSeg] = useState(new Array(12).fill(0));
-  const [cargandoTotalesMensuales, setCargandoTotalesMensuales] = useState(false);
-  const [mesSeleccionado, setMesSeleccionado] = useState(new Date().getMonth() + 1); // 1..12
 
   // Inspector/admin
   const [empleados, setEmpleados] = useState([]);
   const [empleadoSel, setEmpleadoSel] = useState(""); // empleado_id seleccionado o "" (todos)
   const [registrosInspector, setRegistrosInspector] = useState([]);
   const [cargandoInspector, setCargandoInspector] = useState(false);
+
+  // Totales mensuales/año (para el bloque superior del histórico)
+  const [anioTotales, setAnioTotales] = useState(new Date().getFullYear());
+  const [mesSel, setMesSel] = useState(""); // "" = ninguno, "0".."11"
+  const [totalesMensualesSeg, setTotalesMensualesSeg] = useState(new Array(12).fill(0));
+  const [cargandoTotalesMensuales, setCargandoTotalesMensuales] = useState(false);
 
   // Modales
   const [showPrivacidad, setShowPrivacidad] = useState(false);
@@ -379,32 +383,13 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.user?.id, perfil?.empleado_id]);
 
-  // Inspector/admin: cargar empleados
-  useEffect(() => {
-    async function cargarEmpleados() {
-      setEmpleados([]);
-      if (!session?.user?.id) return;
-      if (!(isInspector || isAdmin)) return;
-
-      const { data, error } = await supabase.from("empleados").select("*").order("nombre", { ascending: true });
-
-      if (error) {
-        setMsg({ type: "err", text: `Error cargando empleados: ${error.message}` });
-        return;
-      }
-      setEmpleados(data || []);
-    }
-
-    cargarEmpleados();
-  }, [session?.user?.id, isInspector, isAdmin]);
-
-  // Histórico usuario (rango) — empleado normal
+  // Histórico usuario (rango) - solo empleado normal
   useEffect(() => {
     async function cargarRangoUsuario() {
       setRegistrosRango([]);
       if (tab !== "historico") return;
       if (!perfil?.empleado_id) return;
-      if (isInspector || isAdmin) return; // para inspector/admin se usa el otro panel
+      if (isInspector || isAdmin) return; // inspector/admin usan "Buscar"
 
       const d = fromInputDate(desde);
       const h = fromInputDate(hasta);
@@ -431,7 +416,26 @@ export default function App() {
     cargarRangoUsuario();
   }, [tab, perfil?.empleado_id, desde, hasta, isInspector, isAdmin]);
 
-  // Inspector/admin: buscar registros rango + empleado
+  // Inspector/admin: cargar empleados
+  useEffect(() => {
+    async function cargarEmpleados() {
+      setEmpleados([]);
+      if (!session?.user?.id) return;
+      if (!(isInspector || isAdmin)) return;
+
+      const { data, error } = await supabase.from("empleados").select("*").order("nombre", { ascending: true });
+
+      if (error) {
+        setMsg({ type: "err", text: `Error cargando empleados: ${error.message}` });
+        return;
+      }
+      setEmpleados(data || []);
+    }
+
+    cargarEmpleados();
+  }, [session?.user?.id, isInspector, isAdmin]);
+
+  // Inspector/admin: buscar registros rango + empleado (botón Buscar)
   async function cargarInspector() {
     if (!(isInspector || isAdmin)) return;
     setCargandoInspector(true);
@@ -464,6 +468,57 @@ export default function App() {
     setRegistrosInspector(data || []);
   }
 
+  // Cargar totales mensuales (para el bloque superior del histórico)
+  useEffect(() => {
+    async function cargarTotalesMensuales() {
+      setTotalesMensualesSeg(new Array(12).fill(0));
+      if (tab !== "historico") return;
+      if (!session?.user?.id) return;
+
+      const year = Number(anioTotales);
+      if (!year || Number.isNaN(year)) return;
+
+      // Rango del año
+      const desdeY = `${year}-01-01`;
+      const hastaY = `${year}-12-31`;
+
+      setCargandoTotalesMensuales(true);
+
+      let q = supabase
+        .from("registros")
+        .select("*")
+        .gte("fecha", desdeY)
+        .lte("fecha", hastaY)
+        .order("fecha", { ascending: true })
+        .order("entrada", { ascending: true });
+
+      // Filtro empleado según rol
+      if (isInspector || isAdmin) {
+        if (empleadoSel) q = q.eq("empleado_id", empleadoSel);
+      } else {
+        if (perfil?.empleado_id) q = q.eq("empleado_id", perfil.empleado_id);
+        else {
+          setCargandoTotalesMensuales(false);
+          return;
+        }
+      }
+
+      const { data, error } = await q;
+
+      setCargandoTotalesMensuales(false);
+
+      if (error) {
+        setMsg({ type: "err", text: `Error cargando totales mensuales: ${error.message}` });
+        return;
+      }
+
+      const tot = calcularTotalesMensuales(data || [], year);
+      setTotalesMensualesSeg(tot);
+    }
+
+    cargarTotalesMensuales();
+  }, [tab, session?.user?.id, anioTotales, empleadoSel, isInspector, isAdmin, perfil?.empleado_id]);
+
   const estadoHoy = useMemo(() => calcularEstadoHoy(registrosHoy), [registrosHoy]);
 
   // Totales
@@ -481,132 +536,10 @@ export default function App() {
     [registrosInspector]
   );
 
-  // ----------------- Totales mensuales (año) -----------------
-  // Año por defecto: el de "desde" cuando entras al histórico (más intuitivo)
-  useEffect(() => {
-    if (tab !== "historico") return;
-    const y = yearFromISO(desde);
-    if (Number.isFinite(y)) setAnioTotales(y);
-  }, [tab]); // solo al entrar
-
-  async function cargarTotalesMensuales() {
-    if (!session?.user?.id) return;
-    if (tab !== "historico") return;
-
-    setCargandoTotalesMensuales(true);
-    setTotalesMensualesSeg(new Array(12).fill(0));
-
-    const year = anioTotales;
-    const desdeY = `${year}-01-01`;
-    const hastaY = `${year}-12-31`;
-
-    let q = supabase.from("registros").select("*").gte("fecha", desdeY).lte("fecha", hastaY);
-
-    if (isInspector || isAdmin) {
-      if (empleadoSel) q = q.eq("empleado_id", empleadoSel);
-      // si es (Todos), se queda sin filtro y suma todo
-    } else {
-      if (!perfil?.empleado_id) {
-        setCargandoTotalesMensuales(false);
-        return;
-      }
-      q = q.eq("empleado_id", perfil.empleado_id);
-    }
-
-    const { data, error } = await q;
-    setCargandoTotalesMensuales(false);
-
-    if (error) {
-      setMsg({ type: "err", text: `Error cargando totales mensuales: ${error.message}` });
-      return;
-    }
-
-    const totals = calcularTotalesMensuales(data || [], year);
-    setTotalesMensualesSeg(totals);
-  }
-
-  // recargar totales mensuales cuando cambie el año o el empleado seleccionado (en admin)
-  useEffect(() => {
-    if (tab !== "historico") return;
-    if (!session?.user?.id) return;
-    cargarTotalesMensuales();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, session?.user?.id, anioTotales, empleadoSel, isInspector, isAdmin, perfil?.empleado_id]);
-
-  // ----------------- Selector mes: rellena rango -----------------
-  function aplicarMesEnRango(month1to12, year = anioTotales) {
-    const d = firstDayOfMonthISO(year, month1to12);
-    const h = lastDayOfMonthISO(year, month1to12);
-    setMesSeleccionado(month1to12);
-    setDesde(d);
-    setHasta(h);
-  }
-
-  // ----------------- Export CSV por mes -----------------
-  async function exportarCSVDelMes(month1to12) {
-    setMsg(null);
-    const year = anioTotales;
-    const desdeM = firstDayOfMonthISO(year, month1to12);
-    const hastaM = lastDayOfMonthISO(year, month1to12);
-
-    let q = supabase
-      .from("registros")
-      .select("*")
-      .gte("fecha", desdeM)
-      .lte("fecha", hastaM)
-      .order("fecha", { ascending: true })
-      .order("entrada", { ascending: true });
-
-    let labelEmpleado = "todos";
-
-    if (isInspector || isAdmin) {
-      if (empleadoSel) {
-        q = q.eq("empleado_id", empleadoSel);
-        labelEmpleado = (empleados.find((e) => e.id === empleadoSel)?.nombre || "empleado").replace(/\s+/g, "_");
-      } else {
-        labelEmpleado = "todos";
-      }
-    } else {
-      if (!perfil?.empleado_id) {
-        setMsg({ type: "err", text: "No se ha detectado tu empleado_id." });
-        return;
-      }
-      q = q.eq("empleado_id", perfil.empleado_id);
-      labelEmpleado = (empleado?.nombre || "mi_usuario").replace(/\s+/g, "_");
-    }
-
-    const { data, error } = await q;
-    if (error) {
-      setMsg({ type: "err", text: `Error exportando CSV del mes: ${error.message}` });
-      return;
-    }
-
-    const registros = data || [];
-    const totalMesSeg = registros.reduce((acc, r) => acc + tramoSegundos(r, { contarAbiertosHoyHastaAhora: false }), 0);
-
-    const rows = [
-      ["MES", `${MESES_ES[month1to12 - 1]} ${year}`],
-      ["DESDE", fmtFechaDDMMYYYY(desdeM)],
-      ["HASTA", fmtFechaDDMMYYYY(hastaM)],
-      ["TOTAL MES", secondsToHHMM(totalMesSeg)],
-      [],
-      ["Fecha", "Empleado", "Entrada", "Salida", "Duración", "Tipo", "Nota"],
-      ...registros.map((r) => [
-        fmtFechaDDMMYYYY(r.fecha), // DD-MM-YYYY en CSV
-        isInspector || isAdmin ? nombreEmpleadoById(empleados, r.empleado_id) : (empleado?.nombre || ""),
-        r.entrada || "",
-        r.salida || "",
-        secondsToHHMM(tramoSegundos(r, { contarAbiertosHoyHastaAhora: false })),
-        tipoBonito(r.tipo),
-        r.nota || "",
-      ]),
-    ];
-
-    const filename = `control_horario_${year}_${pad2(month1to12)}_${labelEmpleado}.csv`;
-    downloadCSV(filename, rows);
-
-    setMsg({ type: "ok", text: `CSV del mes (${MESES_ES[month1to12 - 1]}) exportado ✅` });
-  }
+  const totalAnualSeg = useMemo(
+    () => (totalesMensualesSeg || []).reduce((a, b) => a + (b || 0), 0),
+    [totalesMensualesSeg]
+  );
 
   // --------- Jornada partida: varias filas mismo día ---------
   async function iniciarJornada() {
@@ -789,6 +722,186 @@ export default function App() {
   const haySesion = !!session?.user?.id;
   const showHeaderNav = haySesion;
 
+  // ------- Totales mensuales: click y selector mes -------
+  function aplicarMesAlRango(year, monthIndex) {
+    const dISO = firstDayOfMonthISO(year, monthIndex);
+    const hISO = lastDayOfMonthISO(year, monthIndex); // <-- ESTE es el arreglo del "Hasta"
+    setDesde(dISO);
+    setHasta(hISO);
+  }
+
+  function onClickMes(monthIndex) {
+    const year = Number(anioTotales);
+    setMesSel(String(monthIndex));
+    aplicarMesAlRango(year, monthIndex);
+  }
+
+  function onSelectorMesChange(val) {
+    setMesSel(val);
+    if (val === "") return;
+    const mi = parseInt(val, 10);
+    if (Number.isNaN(mi)) return;
+    const year = Number(anioTotales);
+    aplicarMesAlRango(year, mi);
+  }
+
+  // ------- Exportar CSV del mes -------
+  async function exportarCSVDelMes() {
+    setMsg(null);
+    const year = Number(anioTotales);
+
+    let monthIndex = null;
+    if (mesSel !== "") {
+      const mi = parseInt(mesSel, 10);
+      if (!Number.isNaN(mi)) monthIndex = mi;
+    } else {
+      // Si no hay mes seleccionado, intentamos deducirlo del "desde"
+      const d = fromInputDate(desde);
+      monthIndex = d.getMonth();
+    }
+
+    if (monthIndex == null || monthIndex < 0 || monthIndex > 11) {
+      setMsg({ type: "err", text: "Selecciona un mes para exportar." });
+      return;
+    }
+
+    const desdeM = firstDayOfMonthISO(year, monthIndex);
+    const hastaM = lastDayOfMonthISO(year, monthIndex);
+
+    let q = supabase
+      .from("registros")
+      .select("*")
+      .gte("fecha", desdeM)
+      .lte("fecha", hastaM)
+      .order("fecha", { ascending: true })
+      .order("entrada", { ascending: true });
+
+    let labelEmpleado = "todos";
+
+    if (isInspector || isAdmin) {
+      if (empleadoSel) {
+        q = q.eq("empleado_id", empleadoSel);
+        labelEmpleado = (empleados.find((e) => e.id === empleadoSel)?.nombre || "empleado").replace(/\s+/g, "_");
+      } else {
+        labelEmpleado = "todos";
+      }
+    } else {
+      if (!perfil?.empleado_id) {
+        setMsg({ type: "err", text: "No se ha detectado tu empleado_id." });
+        return;
+      }
+      q = q.eq("empleado_id", perfil.empleado_id);
+      labelEmpleado = (empleado?.nombre || "mi_usuario").replace(/\s+/g, "_");
+    }
+
+    const { data, error } = await q;
+
+    if (error) {
+      setMsg({ type: "err", text: `Error exportando CSV del mes: ${error.message}` });
+      return;
+    }
+
+    const registros = data || [];
+    const totalMesSeg = registros.reduce((acc, r) => acc + tramoSegundos(r, { contarAbiertosHoyHastaAhora: false }), 0);
+
+    const rows = [
+      ["MES", `${MESES_ES[monthIndex]} ${year}`],
+      ["DESDE", fmtFechaDDMMYYYY(desdeM)],
+      ["HASTA", fmtFechaDDMMYYYY(hastaM)],
+      ["TOTAL MES", secondsToHHMM(totalMesSeg)],
+      [],
+      ["DETALLE"],
+      ["Fecha", "Empleado", "Entrada", "Salida", "Duración", "Tipo", "Nota"],
+      ...registros.map((r) => [
+        fmtFechaDDMMYYYY(r.fecha),
+        isInspector || isAdmin ? nombreEmpleadoById(empleados, r.empleado_id) : (empleado?.nombre || ""),
+        r.entrada || "",
+        r.salida || "",
+        secondsToHHMM(tramoSegundos(r, { contarAbiertosHoyHastaAhora: false })),
+        tipoBonito(r.tipo),
+        r.nota || "",
+      ]),
+    ];
+
+    const filename = `control_horario_${year}_${pad2(monthIndex + 1)}_${labelEmpleado}.csv`;
+    downloadCSV(filename, rows);
+
+    setMsg({ type: "ok", text: `CSV del mes (${MESES_ES[monthIndex]} ${year}) exportado ✅` });
+  }
+
+  // ------- Exportar CSV del año + resumen mensual -------
+  async function exportarCSVDelAnio() {
+    setMsg(null);
+    const year = Number(anioTotales);
+    const desdeY = `${year}-01-01`;
+    const hastaY = `${year}-12-31`;
+
+    let q = supabase
+      .from("registros")
+      .select("*")
+      .gte("fecha", desdeY)
+      .lte("fecha", hastaY)
+      .order("fecha", { ascending: true })
+      .order("entrada", { ascending: true });
+
+    let labelEmpleado = "todos";
+
+    if (isInspector || isAdmin) {
+      if (empleadoSel) {
+        q = q.eq("empleado_id", empleadoSel);
+        labelEmpleado = (empleados.find((e) => e.id === empleadoSel)?.nombre || "empleado").replace(/\s+/g, "_");
+      } else {
+        labelEmpleado = "todos";
+      }
+    } else {
+      if (!perfil?.empleado_id) {
+        setMsg({ type: "err", text: "No se ha detectado tu empleado_id." });
+        return;
+      }
+      q = q.eq("empleado_id", perfil.empleado_id);
+      labelEmpleado = (empleado?.nombre || "mi_usuario").replace(/\s+/g, "_");
+    }
+
+    const { data, error } = await q;
+
+    if (error) {
+      setMsg({ type: "err", text: `Error exportando CSV del año: ${error.message}` });
+      return;
+    }
+
+    const registros = data || [];
+    const totalYearSeg = registros.reduce((acc, r) => acc + tramoSegundos(r, { contarAbiertosHoyHastaAhora: false }), 0);
+    const totMes = calcularTotalesMensuales(registros, year);
+
+    const rows = [
+      ["AÑO", String(year)],
+      ["DESDE", fmtFechaDDMMYYYY(desdeY)],
+      ["HASTA", fmtFechaDDMMYYYY(hastaY)],
+      ["TOTAL AÑO", secondsToHHMM(totalYearSeg)],
+      [],
+      ["RESUMEN MENSUAL"],
+      ["Mes", "Total"],
+      ...MESES_ES.map((m, i) => [m, secondsToHHMM(totMes[i] || 0)]),
+      [],
+      ["DETALLE"],
+      ["Fecha", "Empleado", "Entrada", "Salida", "Duración", "Tipo", "Nota"],
+      ...registros.map((r) => [
+        fmtFechaDDMMYYYY(r.fecha),
+        isInspector || isAdmin ? nombreEmpleadoById(empleados, r.empleado_id) : (empleado?.nombre || ""),
+        r.entrada || "",
+        r.salida || "",
+        secondsToHHMM(tramoSegundos(r, { contarAbiertosHoyHastaAhora: false })),
+        tipoBonito(r.tipo),
+        r.nota || "",
+      ]),
+    ];
+
+    const filename = `control_horario_${year}_ANIO_${labelEmpleado}.csv`;
+    downloadCSV(filename, rows);
+
+    setMsg({ type: "ok", text: `CSV del año (${year}) exportado ✅` });
+  }
+
   // --------- UI ---------
   return (
     <div style={s.pagina}>
@@ -950,7 +1063,7 @@ export default function App() {
                         <div key={r.id} style={s.listRow}>
                           <div style={{ fontWeight: 900 }}>{tipoBonito(r.tipo)}</div>
                           <div style={{ opacity: 0.85, fontWeight: 800 }}>
-                            {fmtFechaDDMMYYYYslash(r.fecha)} — {r.entrada || "--:--:--"} → {r.salida || "--:--:--"} ({" "}
+                            {fmtFechaDDMMYYYY(r.fecha)} — {r.entrada || "--:--:--"} → {r.salida || "--:--:--"} ({" "}
                             {secondsToHHMM(tramoSegundos(r))} )
                           </div>
                           <div style={{ opacity: 0.85 }}>
@@ -976,112 +1089,71 @@ export default function App() {
                 <>
                   <div style={s.sectionTitle}>Histórico</div>
 
-                  {/* --- Totales mensuales --- */}
-                  <div style={s.monthCard}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                  {/* Totales mensuales + selector mes + CSV por mes + resumen anual */}
+                  <div style={s.monthBox}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
                       <div style={{ fontWeight: 950, fontSize: 18 }}>Totales mensuales ({anioTotales})</div>
-
                       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                        <select
-                          style={s.selectMini}
+                        <span style={{ fontWeight: 900, opacity: 0.8 }}>Año</span>
+                        <input
+                          style={s.yearInput}
+                          type="number"
                           value={anioTotales}
-                          onChange={(e) => setAnioTotales(parseInt(e.target.value, 10) || new Date().getFullYear())}
-                          title="Año"
-                        >
-                          {Array.from({ length: 6 }).map((_, i) => {
-                            const y = new Date().getFullYear() - 2 + i;
-                            return (
-                              <option key={y} value={y}>
-                                {y}
-                              </option>
-                            );
-                          })}
-                        </select>
-
-                        {/* Selector por mes (nuevo) */}
-                        <select
-                          style={s.selectMini}
-                          value={mesSeleccionado}
-                          onChange={(e) => aplicarMesEnRango(parseInt(e.target.value, 10) || 1, anioTotales)}
-                          title="Mes"
-                        >
-                          {MESES_ES.map((m, idx) => (
-                            <option key={m} value={idx + 1}>
-                              {m}
-                            </option>
-                          ))}
-                        </select>
-
-                        {/* Botón: exportar CSV del mes seleccionado (nuevo) */}
-                        <button
-                          style={s.btnMini}
-                          onClick={() => exportarCSVDelMes(mesSeleccionado)}
-                          type="button"
-                          disabled={cargandoTotalesMensuales}
-                        >
-                          CSV del mes
-                        </button>
+                          onChange={(e) => setAnioTotales(parseInt(e.target.value || "0", 10) || new Date().getFullYear())}
+                        />
                       </div>
                     </div>
 
-                    {cargandoTotalesMensuales ? (
-                      <div style={{ marginTop: 10, fontWeight: 800, opacity: 0.75 }}>Cargando totales...</div>
-                    ) : (
-                      <>
-                        <div style={s.monthGrid}>
-                          {MESES_ES.map((nombreMes, i) => {
-                            const m = i + 1;
-                            const total = totalesMensualesSeg[i] || 0;
-                            const activo = mesSeleccionado === m;
-                            return (
-                              <button
-                                key={nombreMes}
-                                type="button"
-                                style={activo ? s.monthPillActive : s.monthPill}
-                                onClick={() => aplicarMesEnRango(m, anioTotales)}
-                                title="Pincha para rellenar Desde/Hasta con ese mes"
-                              >
-                                <span style={{ fontWeight: 950 }}>{nombreMes}</span>
-                                <span style={{ fontWeight: 950, opacity: 0.9 }}>{secondsToHHMM(total)}</span>
+                    <div style={{ marginTop: 6, fontWeight: 950, opacity: 0.85 }}>Total año: {secondsToHHMM(totalAnualSeg)}</div>
 
-                                {/* Export por mes (nuevo) */}
-                                <span style={{ marginLeft: "auto" }} />
-                                <span
-                                  style={s.csvTag}
-                                  onClick={(ev) => {
-                                    ev.preventDefault();
-                                    ev.stopPropagation();
-                                    exportarCSVDelMes(m);
-                                  }}
-                                  role="button"
-                                  tabIndex={0}
-                                >
-                                  CSV
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
+                    <div style={s.monthGrid}>
+                      {MESES_ES.map((m, idx) => {
+                        const selected = String(idx) === String(mesSel);
+                        return (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => onClickMes(idx)}
+                            style={selected ? s.monthPillActive : s.monthPill}
+                            title="Pincha para rellenar Desde/Hasta con este mes"
+                          >
+                            <span style={{ fontWeight: 950 }}>{m}</span>
+                            <span style={{ fontWeight: 950, opacity: 0.85 }}>{secondsToHHMM(totalesMensualesSeg[idx] || 0)}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
 
-                        <div style={{ marginTop: 10, fontSize: 13, opacity: 0.75, fontWeight: 800 }}>
-                          Tip: pincha un mes para rellenar Desde y Hasta con ese mes.
-                        </div>
-                      </>
-                    )}
+                    <div style={{ marginTop: 10, opacity: 0.8, fontWeight: 800, fontSize: 13 }}>
+                      Tip: pincha un mes o usa el selector para rellenar Desde y Hasta con ese mes.
+                    </div>
+
+                    <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                      <div style={{ fontWeight: 950, opacity: 0.85 }}>Selector mes</div>
+                      <select style={s.selectMini} value={mesSel} onChange={(e) => onSelectorMesChange(e.target.value)}>
+                        <option value="">(Sin seleccionar)</option>
+                        {MESES_ES.map((m, i) => (
+                          <option key={m} value={String(i)}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+
+                      <button style={s.btnMini} type="button" onClick={exportarCSVDelMes} disabled={cargandoTotalesMensuales}>
+                        CSV del mes
+                      </button>
+
+                      <button style={s.btnMini} type="button" onClick={exportarCSVDelAnio} disabled={cargandoTotalesMensuales}>
+                        CSV del año
+                      </button>
+                    </div>
                   </div>
 
+                  {/* Rango */}
                   <div style={s.filters}>
                     <div style={s.filterCol}>
                       <div style={s.filterLabel}>Desde</div>
-                      <input
-                        type="date"
-                        value={desde}
-                        onChange={(e) => {
-                          setDesde(e.target.value);
-                          setMesSeleccionado(parseInt(String(e.target.value || "").split("-")[1] || "1", 10) || 1);
-                        }}
-                        style={s.input}
-                      />
+                      <input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} style={s.input} />
                     </div>
                     <div style={s.filterCol}>
                       <div style={s.filterLabel}>Hasta</div>
@@ -1092,12 +1164,7 @@ export default function App() {
                   {(isInspector || isAdmin) && (
                     <div style={{ marginTop: 12 }}>
                       <div style={s.filterLabel}>Empleado</div>
-                      <select
-                        style={s.select}
-                        value={empleadoSel}
-                        onChange={(e) => setEmpleadoSel(e.target.value)}
-                        title="Filtrar por empleado"
-                      >
+                      <select style={s.select} value={empleadoSel} onChange={(e) => setEmpleadoSel(e.target.value)}>
                         <option value="">(Todos)</option>
                         {empleados.map((emp) => (
                           <option key={emp.id} value={emp.id}>
@@ -1119,10 +1186,10 @@ export default function App() {
                               [],
                               ["Fecha", "Empleado", "Entrada", "Salida", "Duración", "Tipo", "Nota"],
                               ...(registrosInspector || []).map((r) => {
-                                const empNombre = nombreEmpleadoById(empleados, r.empleado_id);
+                                const empNom = nombreEmpleadoById(empleados, r.empleado_id);
                                 return [
-                                  fmtFechaDDMMYYYY(r.fecha), // DD-MM-YYYY
-                                  empNombre,
+                                  fmtFechaDDMMYYYY(r.fecha),
+                                  empNom,
                                   r.entrada || "",
                                   r.salida || "",
                                   secondsToHHMM(tramoSegundos(r, { contarAbiertosHoyHastaAhora: false })),
@@ -1131,7 +1198,7 @@ export default function App() {
                                 ];
                               }),
                             ];
-                            downloadCSV(`control_horario_${fmtFechaDDMMYYYY(desde)}_a_${fmtFechaDDMMYYYY(hasta)}.csv`, rows);
+                            downloadCSV(`control_horario_${desde}_a_${hasta}.csv`, rows);
                           }}
                           disabled={!registrosInspector?.length}
                         >
@@ -1153,23 +1220,19 @@ export default function App() {
                           {porDiaInspector.map((d) => (
                             <div key={d.fecha} style={s.listRow}>
                               <div style={{ fontWeight: 950, marginBottom: 6 }}>
-                                {fmtFechaDDMMYYYYslash(d.fecha)} — Total día: {secondsToHHMM(d.totalSeg)}
+                                {fmtFechaDDMMYYYY(d.fecha)} — Total día: {secondsToHHMM(d.totalSeg)}
                               </div>
 
                               {d.items
                                 .slice()
                                 .sort((a, b) => (a.entrada < b.entrada ? 1 : -1))
                                 .map((r) => {
-                                  const empNombre = nombreEmpleadoById(empleados, r.empleado_id);
+                                  const empNom = nombreEmpleadoById(empleados, r.empleado_id);
                                   return (
-                                    <div
-                                      key={r.id}
-                                      style={{ padding: "6px 0", borderTop: "1px solid rgba(0,0,0,0.06)" }}
-                                    >
-                                      <div style={{ fontWeight: 950 }}>{empNombre}</div>
+                                    <div key={r.id} style={{ padding: "6px 0", borderTop: "1px solid rgba(0,0,0,0.06)" }}>
+                                      <div style={{ fontWeight: 950 }}>{empNom}</div>
                                       <div style={{ opacity: 0.85, fontWeight: 800 }}>
-                                        {r.entrada || "--:--:--"} → {r.salida || "--:--:--"} ({" "}
-                                        {secondsToHHMM(tramoSegundos(r, { contarAbiertosHoyHastaAhora: false }))} )
+                                        {r.entrada || "--:--:--"} → {r.salida || "--:--:--"} ( {secondsToHHMM(tramoSegundos(r))} )
                                       </div>
                                       <div style={{ fontWeight: 900 }}>{tipoBonito(r.tipo)}</div>
                                       <div style={{ opacity: 0.85 }}>
@@ -1191,12 +1254,6 @@ export default function App() {
                         Total rango: {secondsToHHMM(totalRangoUsuarioSeg)}
                       </div>
 
-                      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
-                        <button style={s.btnMainSmall} onClick={() => exportarCSVDelMes(mesSeleccionado)} type="button">
-                          Exportar CSV del mes seleccionado
-                        </button>
-                      </div>
-
                       {!registrosRango?.length ? (
                         <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin resultados en ese rango)</div>
                       ) : (
@@ -1204,20 +1261,16 @@ export default function App() {
                           {porDiaRangoUsuario.map((d) => (
                             <div key={d.fecha} style={s.listRow}>
                               <div style={{ fontWeight: 950, marginBottom: 6 }}>
-                                {fmtFechaDDMMYYYYslash(d.fecha)} — Total día: {secondsToHHMM(d.totalSeg)}
+                                {fmtFechaDDMMYYYY(d.fecha)} — Total día: {secondsToHHMM(d.totalSeg)}
                               </div>
 
                               {d.items
                                 .slice()
                                 .sort((a, b) => (a.entrada < b.entrada ? 1 : -1))
                                 .map((r) => (
-                                  <div
-                                    key={r.id}
-                                    style={{ padding: "6px 0", borderTop: "1px solid rgba(0,0,0,0.06)" }}
-                                  >
+                                  <div key={r.id} style={{ padding: "6px 0", borderTop: "1px solid rgba(0,0,0,0.06)" }}>
                                     <div style={{ opacity: 0.85, fontWeight: 800 }}>
-                                      {r.entrada || "--:--:--"} → {r.salida || "--:--:--"} ({" "}
-                                      {secondsToHHMM(tramoSegundos(r, { contarAbiertosHoyHastaAhora: false }))} )
+                                      {r.entrada || "--:--:--"} → {r.salida || "--:--:--"} ( {secondsToHHMM(tramoSegundos(r))} )
                                     </div>
                                     <div style={{ fontWeight: 900 }}>{tipoBonito(r.tipo)}</div>
                                     <div style={{ opacity: 0.85 }}>
@@ -1318,8 +1371,8 @@ export default function App() {
 
             <div style={{ marginTop: 12, fontWeight: 900 }}>Finalidad</div>
             <div>
-              Gestión del control horario y registro de jornada laboral (entradas y salidas), incluyendo notas asociadas al
-              fichaje cuando el usuario las añada.
+              Gestión del control horario y registro de jornada laboral (entradas y salidas), incluyendo notas asociadas
+              al fichaje cuando el usuario las añada.
             </div>
 
             <div style={{ marginTop: 12, fontWeight: 900 }}>Base legal</div>
@@ -1473,26 +1526,6 @@ const styles = {
     background: "white",
     fontWeight: 800,
   },
-  selectMini: {
-    borderRadius: 14,
-    border: "2px solid rgba(0,0,0,0.10)",
-    padding: "10px 12px",
-    fontSize: 14,
-    outline: "none",
-    boxSizing: "border-box",
-    background: "white",
-    fontWeight: 900,
-  },
-  btnMini: {
-    borderRadius: 14,
-    padding: "10px 12px",
-    fontSize: 14,
-    fontWeight: 950,
-    border: "none",
-    background: "#b30000",
-    color: "white",
-    boxShadow: "0 10px 20px rgba(179,0,0,0.18)",
-  },
   btnMain: {
     width: "100%",
     marginTop: 16,
@@ -1610,8 +1643,8 @@ const styles = {
   filterCol: { flex: 1, minWidth: 160 },
   filterLabel: { fontWeight: 950, opacity: 0.8, marginBottom: 6 },
 
-  // --- Totales mensuales UI ---
-  monthCard: {
+  // Bloque Totales mensuales
+  monthBox: {
     borderRadius: 18,
     border: "2px solid rgba(0,0,0,0.06)",
     padding: "12px 14px",
@@ -1625,39 +1658,54 @@ const styles = {
     gap: 10,
   },
   monthPill: {
-    width: "100%",
     borderRadius: 16,
-    border: "2px solid rgba(0,0,0,0.06)",
+    border: "2px solid rgba(0,0,0,0.08)",
     background: "white",
-    padding: "12px 12px",
+    padding: "10px 12px",
     display: "flex",
+    justifyContent: "space-between",
     alignItems: "center",
-    gap: 10,
-    textAlign: "left",
+    fontSize: 15,
+    fontWeight: 900,
     cursor: "pointer",
   },
   monthPillActive: {
-    width: "100%",
     borderRadius: 16,
-    border: "2px solid rgba(179,0,0,0.25)",
+    border: "2px solid rgba(179,0,0,0.40)",
     background: "rgba(179,0,0,0.06)",
-    padding: "12px 12px",
+    padding: "10px 12px",
     display: "flex",
+    justifyContent: "space-between",
     alignItems: "center",
-    gap: 10,
-    textAlign: "left",
+    fontSize: 15,
+    fontWeight: 900,
     cursor: "pointer",
   },
-  csvTag: {
-    marginLeft: 10,
-    padding: "6px 10px",
-    borderRadius: 999,
+  selectMini: {
+    borderRadius: 14,
     border: "2px solid rgba(0,0,0,0.10)",
-    background: "#fff",
+    padding: "10px 12px",
+    fontSize: 14,
+    outline: "none",
+    background: "white",
+    fontWeight: 800,
+  },
+  btnMini: {
+    borderRadius: 14,
+    padding: "10px 12px",
+    fontSize: 14,
     fontWeight: 950,
-    fontSize: 12,
-    color: "#b30000",
-    flex: "0 0 auto",
+    border: "2px solid rgba(0,0,0,0.10)",
+    background: "white",
+    cursor: "pointer",
+  },
+  yearInput: {
+    width: 110,
+    borderRadius: 14,
+    border: "2px solid rgba(0,0,0,0.10)",
+    padding: "8px 10px",
+    fontWeight: 900,
+    outline: "none",
   },
 
   // Modal
