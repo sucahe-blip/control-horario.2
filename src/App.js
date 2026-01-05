@@ -4,7 +4,6 @@ import "./style.css";
 
 /**
  * Control horario - Cañizares S.A.
- * Esquema esperado:
  *
  * public.empleados:  id (uuid), nombre (text), rol (text)
  * public.usuarios:   user_id (uuid), empleado_id (uuid), rol (text), es_admin (bool), es_inspector (bool)
@@ -60,6 +59,7 @@ function horaAhora() {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
+// input[type=date] usa YYYY-MM-DD
 function toInputDate(d) {
   const x = new Date(d);
   return `${x.getFullYear()}-${pad2(x.getMonth() + 1)}-${pad2(x.getDate())}`;
@@ -73,53 +73,13 @@ function fromInputDate(str) {
   return dt;
 }
 
-// ✅ NUEVO: formateo visible DD-MM-YYYY (para App + CSV)
-function fmtFechaDDMMYYYY(iso) {
-  if (!iso) return "";
-  const parts = String(iso).split("-");
-  if (parts.length !== 3) return String(iso);
+// Formato visible DD-MM-YYYY (desde ISO YYYY-MM-DD)
+function fmtFechaDDMMYYYY(isoYYYYMMDD) {
+  if (!isoYYYYMMDD || typeof isoYYYYMMDD !== "string") return "";
+  const parts = isoYYYYMMDD.split("-");
+  if (parts.length !== 3) return isoYYYYMMDD;
   const [y, m, d] = parts;
   return `${d}-${m}-${y}`;
-}
-
-// ✅ Helpers meses (YYYY-MM -> rango + etiquetas)
-const MESES_ES = [
-  "Enero",
-  "Febrero",
-  "Marzo",
-  "Abril",
-  "Mayo",
-  "Junio",
-  "Julio",
-  "Agosto",
-  "Septiembre",
-  "Octubre",
-  "Noviembre",
-  "Diciembre",
-];
-
-function monthKeyFromISO(iso) {
-  // iso: YYYY-MM-DD
-  if (!iso || String(iso).length < 7) return null;
-  return String(iso).slice(0, 7); // YYYY-MM
-}
-
-function monthLabel(monthKey) {
-  // monthKey: YYYY-MM
-  if (!monthKey || monthKey.length !== 7) return String(monthKey || "");
-  const y = parseInt(monthKey.slice(0, 4), 10);
-  const m = parseInt(monthKey.slice(5, 7), 10);
-  const name = MESES_ES[(m || 1) - 1] || monthKey;
-  return `${name} ${y}`;
-}
-
-function monthRangeISO(monthKey) {
-  // returns {desdeISO, hastaISO} inclusive
-  const y = parseInt(monthKey.slice(0, 4), 10);
-  const m = parseInt(monthKey.slice(5, 7), 10);
-  const first = new Date(y, (m || 1) - 1, 1);
-  const last = new Date(y, (m || 1), 0); // day 0 of next month = last day of month
-  return { desdeISO: toInputDate(first), hastaISO: toInputDate(last) };
 }
 
 // ---------- helpers horas ----------
@@ -172,22 +132,16 @@ function agruparPorFecha(registros) {
     .map(([fecha, data]) => ({ fecha, ...data }));
 }
 
-// ✅ NUEVO: agrupar por mes (YYYY-MM)
-function agruparPorMes(registros) {
-  const map = new Map(); // monthKey -> { totalSeg, count }
-  for (const r of registros || []) {
-    const mk = monthKeyFromISO(r.fecha);
-    if (!mk) continue;
-    const cur = map.get(mk) || { totalSeg: 0, count: 0 };
-    cur.totalSeg += tramoSegundos(r);
-    cur.count += 1;
-    map.set(mk, cur);
-  }
+function tipoBonito(tipo) {
+  const t = (tipo || "").toLowerCase();
+  if (t === "inicio") return "Inicio jornada";
+  if (t === "fin") return "Fin jornada";
+  return tipo || "-";
+}
 
-  // Orden descendente por mes
-  return Array.from(map.entries())
-    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-    .map(([monthKey, v]) => ({ monthKey, ...v }));
+function calcularEstadoHoy(registrosHoy) {
+  const abierto = (registrosHoy || []).some((r) => !r.salida);
+  return { estado: abierto ? "Dentro" : "Fuera", abiertoTrabajo: abierto };
 }
 
 // ---------- CSV ----------
@@ -209,16 +163,27 @@ function downloadCSV(filename, rows) {
   URL.revokeObjectURL(url);
 }
 
-function tipoBonito(tipo) {
-  const t = (tipo || "").toLowerCase();
-  if (t === "inicio") return "Inicio jornada";
-  if (t === "fin") return "Fin jornada";
-  return tipo || "-";
-}
+// ---------- meses (totales mensuales + click rellena rango) ----------
+const MESES = [
+  { idx: 0, label: "Enero" },
+  { idx: 1, label: "Febrero" },
+  { idx: 2, label: "Marzo" },
+  { idx: 3, label: "Abril" },
+  { idx: 4, label: "Mayo" },
+  { idx: 5, label: "Junio" },
+  { idx: 6, label: "Julio" },
+  { idx: 7, label: "Agosto" },
+  { idx: 8, label: "Septiembre" },
+  { idx: 9, label: "Octubre" },
+  { idx: 10, label: "Noviembre" },
+  { idx: 11, label: "Diciembre" },
+];
 
-function calcularEstadoHoy(registrosHoy) {
-  const abierto = (registrosHoy || []).some((r) => !r.salida);
-  return { estado: abierto ? "Dentro" : "Fuera", abiertoTrabajo: abierto };
+function getMonthRangeInputDates(year, monthIdx0) {
+  // monthIdx0: 0..11
+  const d1 = new Date(year, monthIdx0, 1);
+  const dLast = new Date(year, monthIdx0 + 1, 0); // último día del mes
+  return { desde: toInputDate(d1), hasta: toInputDate(dLast) };
 }
 
 // ---------- App ----------
@@ -248,7 +213,7 @@ export default function App() {
   const [registrosRango, setRegistrosRango] = useState([]);
   const [nota, setNota] = useState("");
 
-  // Filtros rango (inputs deben ser YYYY-MM-DD)
+  // Filtros rango (input date: YYYY-MM-DD)
   const [desde, setDesde] = useState(toInputDate(new Date()));
   const [hasta, setHasta] = useState(toInputDate(new Date()));
 
@@ -379,10 +344,10 @@ export default function App() {
       setRegistrosRango([]);
       if (tab !== "historico") return;
       if (!perfil?.empleado_id) return;
+      if (isInspector || isAdmin) return; // inspector/admin usa su búsqueda
 
       const d = fromInputDate(desde);
       const h = fromInputDate(hasta);
-
       const desdeISO = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
       const hastaISO = `${h.getFullYear()}-${pad2(h.getMonth() + 1)}-${pad2(h.getDate())}`;
 
@@ -403,7 +368,7 @@ export default function App() {
     }
 
     cargarRangoUsuario();
-  }, [tab, perfil?.empleado_id, desde, hasta]);
+  }, [tab, perfil?.empleado_id, desde, hasta, isInspector, isAdmin]);
 
   // Inspector/admin: cargar empleados
   useEffect(() => {
@@ -412,7 +377,10 @@ export default function App() {
       if (!session?.user?.id) return;
       if (!(isInspector || isAdmin)) return;
 
-      const { data, error } = await supabase.from("empleados").select("*").order("nombre", { ascending: true });
+      const { data, error } = await supabase
+        .from("empleados")
+        .select("*")
+        .order("nombre", { ascending: true });
 
       if (error) {
         setMsg({ type: "err", text: `Error cargando empleados: ${error.message}` });
@@ -477,18 +445,39 @@ export default function App() {
     [registrosInspector]
   );
 
-  // ✅ NUEVO: Totales mensuales
-  const porMesUsuario = useMemo(() => agruparPorMes(registrosRango), [registrosRango]);
-  const porMesInspector = useMemo(() => agruparPorMes(registrosInspector), [registrosInspector]);
+  // Dataset “actual” para calcular totales mensuales clicables
+  const dataHistoricoActual = useMemo(() => {
+    return isInspector || isAdmin ? registrosInspector : registrosRango;
+  }, [isInspector, isAdmin, registrosInspector, registrosRango]);
 
-  // ✅ NUEVO: click mes => autocompletar rango
-  function seleccionarMes(monthKey) {
-    if (!monthKey) return;
-    const { desdeISO, hastaISO } = monthRangeISO(monthKey);
-    setDesde(desdeISO);
-    setHasta(hastaISO);
-    // Para inspector/admin no auto-buscamos (por control),
-    // el usuario puede darle a Buscar (como ahora). Si quieres que auto-busque, dímelo.
+  const yearHistorico = useMemo(() => {
+    // usamos el año de "desde" para pintar meses
+    const d = fromInputDate(desde);
+    return d.getFullYear();
+  }, [desde]);
+
+  const totalesMensuales = useMemo(() => {
+    // Calcula totales por mes (del año de yearHistorico) basándose en lo que haya cargado en el histórico actual.
+    // Si el rango seleccionado no incluye todo el año, verás totales solo de lo cargado (esto es normal).
+    const acc = Array.from({ length: 12 }, () => 0);
+    for (const r of dataHistoricoActual || []) {
+      if (!r?.fecha) continue;
+      const [yy, mm] = String(r.fecha).split("-");
+      const y = parseInt(yy, 10);
+      const m = parseInt(mm, 10); // 1..12
+      if (!y || !m) continue;
+      if (y !== yearHistorico) continue;
+      acc[m - 1] += tramoSegundos(r);
+    }
+    return acc; // segundos por mes 0..11
+  }, [dataHistoricoActual, yearHistorico]);
+
+  // ✅ FIX: al pinchar mes rellenamos Desde y Hasta (último día del mes)
+  function onClickMes(monthIdx0) {
+    const { desde: d, hasta: h } = getMonthRangeInputDates(yearHistorico, monthIdx0);
+    setDesde(d);
+    setHasta(h); // <-- ESTE ES EL ARREGLO CLAVE
+    // si inspector/admin, no auto-buscamos para no sorprender: pulsas "Buscar" como hasta ahora
   }
 
   // --------- Jornada partida: varias filas mismo día ---------
@@ -714,7 +703,10 @@ export default function App() {
                 <button style={tab === "inicio" ? s.tabActive : s.tab} onClick={() => setTab("inicio")}>
                   Inicio
                 </button>
-                <button style={tab === "historico" ? s.tabActive : s.tab} onClick={() => setTab("historico")}>
+                <button
+                  style={tab === "historico" ? s.tabActive : s.tab}
+                  onClick={() => setTab("historico")}
+                >
                   Histórico
                 </button>
               </div>
@@ -771,7 +763,12 @@ export default function App() {
                 </button>
               </div>
 
-              {msg && <div style={msg.type === "ok" ? s.msgOk : s.msgErr}>{msg.type === "ok" ? "✅ " : "❌ "}{msg.text}</div>}
+              {msg && (
+                <div style={msg.type === "ok" ? s.msgOk : s.msgErr}>
+                  {msg.type === "ok" ? "✅ " : "❌ "}
+                  {msg.text}
+                </div>
+              )}
             </form>
           )}
 
@@ -780,17 +777,12 @@ export default function App() {
               <div style={s.userRow}>
                 <div style={s.userPill}>
                   <span style={{ marginRight: 10 }}>👤</span>
-                  <span
-                    style={{
-                      fontWeight: 900,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
+                  <span style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {nombreVisible}
                   </span>
-                  {(isInspector || isAdmin) && <span style={s.roleBadge}>{isAdmin ? "ADMIN" : "INSPECCIÓN"}</span>}
+                  {(isInspector || isAdmin) && (
+                    <span style={s.roleBadge}>{isAdmin ? "ADMIN" : "INSPECCIÓN"}</span>
+                  )}
                 </div>
 
                 <button style={s.btnOut} onClick={salir}>
@@ -813,7 +805,12 @@ export default function App() {
                     Ej.: motivo de ausencia, detalle del día, etc.
                   </div>
 
-                  {msg && <div style={msg.type === "ok" ? s.msgOk : s.msgErr}>{msg.type === "ok" ? "✅ " : "❌ "}{msg.text}</div>}
+                  {msg && (
+                    <div style={msg.type === "ok" ? s.msgOk : s.msgErr}>
+                      {msg.type === "ok" ? "✅ " : "❌ "}
+                      {msg.text}
+                    </div>
+                  )}
 
                   <div style={s.hr} />
 
@@ -831,7 +828,7 @@ export default function App() {
                           <div style={{ fontWeight: 900 }}>{tipoBonito(r.tipo)}</div>
                           <div style={{ opacity: 0.85, fontWeight: 800 }}>
                             {fmtFechaDDMMYYYY(r.fecha)} — {r.entrada || "--:--:--"} → {r.salida || "--:--:--"} (
-                            {secondsToHHMM(tramoSegundos(r))} )
+                            {secondsToHHMM(tramoSegundos(r))})
                           </div>
                           <div style={{ opacity: 0.85 }}>
                             <span style={{ fontWeight: 900 }}>Nota:</span> {r.nota ? r.nota : "-"}
@@ -855,6 +852,30 @@ export default function App() {
               {tab === "historico" && (
                 <>
                   <div style={s.sectionTitle}>Histórico</div>
+
+                  {/* Totales mensuales clicables */}
+                  <div style={s.monthBox}>
+                    <div style={s.monthTitle}>Totales mensuales ({yearHistorico})</div>
+                    <div style={s.monthGrid}>
+                      {MESES.map((m) => (
+                        <button
+                          key={m.idx}
+                          style={s.monthPill}
+                          onClick={() => onClickMes(m.idx)}
+                          type="button"
+                          title="Rellenar rango con este mes"
+                        >
+                          <div style={{ fontWeight: 950 }}>{m.label}</div>
+                          <div style={{ fontWeight: 950, opacity: 0.85 }}>
+                            {secondsToHHMM(totalesMensuales[m.idx])}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 800, marginTop: 8 }}>
+                      Tip: pincha un mes para rellenar <b>Desde</b> y <b>Hasta</b> con ese mes.
+                    </div>
+                  </div>
 
                   <div style={s.filters}>
                     <div style={s.filterCol}>
@@ -894,7 +915,7 @@ export default function App() {
                               ...(registrosInspector || []).map((r) => {
                                 const emp = empleados.find((x) => x.id === r.empleado_id);
                                 return [
-                                  fmtFechaDDMMYYYY(r.fecha),
+                                  fmtFechaDDMMYYYY(r.fecha), // ✅ DD-MM-YYYY en CSV
                                   emp?.nombre || r.empleado_id,
                                   r.entrada || "",
                                   r.salida || "",
@@ -910,29 +931,6 @@ export default function App() {
                           Exportar CSV (Excel)
                         </button>
                       </div>
-
-                      <div style={s.hr} />
-
-                      {/* ✅ NUEVO: Totales mensuales clicables (Inspector/Admin) */}
-                      <div style={s.sectionTitle}>Totales mensuales</div>
-                      {!porMesInspector?.length ? (
-                        <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin datos en el rango)</div>
-                      ) : (
-                        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
-                          {porMesInspector.map((m) => (
-                            <button
-                              key={m.monthKey}
-                              style={styles.monthRowBtn}
-                              onClick={() => seleccionarMes(m.monthKey)}
-                              type="button"
-                              title="Pincha para rellenar Desde/Hasta con ese mes"
-                            >
-                              <span style={{ fontWeight: 950 }}>{monthLabel(m.monthKey)}</span>
-                              <span style={{ fontWeight: 950 }}>{secondsToHHMM(m.totalSeg)}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
 
                       <div style={s.hr} />
                       <div style={s.sectionTitle}>Resultados</div>
@@ -964,12 +962,9 @@ export default function App() {
                                       <div style={{ fontWeight: 950 }}>{emp?.nombre || r.empleado_id}</div>
                                       <div style={{ opacity: 0.85, fontWeight: 800 }}>
                                         {r.entrada || "--:--:--"} → {r.salida || "--:--:--"} (
-                                        {secondsToHHMM(tramoSegundos(r))} )
+                                        {secondsToHHMM(tramoSegundos(r))})
                                       </div>
                                       <div style={{ fontWeight: 900 }}>{tipoBonito(r.tipo)}</div>
-                                      <div style={{ opacity: 0.85 }}>
-                                        <span style={{ fontWeight: 900 }}>Fecha:</span> {fmtFechaDDMMYYYY(r.fecha)}
-                                      </div>
                                       <div style={{ opacity: 0.85 }}>
                                         <span style={{ fontWeight: 900 }}>Nota:</span> {r.nota ? r.nota : "-"}
                                       </div>
@@ -985,29 +980,6 @@ export default function App() {
 
                   {!isInspector && !isAdmin && (
                     <div style={{ marginTop: 12 }}>
-                      {/* ✅ NUEVO: Totales mensuales clicables (Empleado) */}
-                      <div style={s.sectionTitle}>Totales mensuales</div>
-                      {!porMesUsuario?.length ? (
-                        <div style={{ opacity: 0.7, fontWeight: 700 }}>(Sin datos en el rango)</div>
-                      ) : (
-                        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
-                          {porMesUsuario.map((m) => (
-                            <button
-                              key={m.monthKey}
-                              style={styles.monthRowBtn}
-                              onClick={() => seleccionarMes(m.monthKey)}
-                              type="button"
-                              title="Pincha para rellenar Desde/Hasta con ese mes"
-                            >
-                              <span style={{ fontWeight: 950 }}>{monthLabel(m.monthKey)}</span>
-                              <span style={{ fontWeight: 950 }}>{secondsToHHMM(m.totalSeg)}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-
-                      <div style={s.hr} />
-
                       <div style={{ fontWeight: 950, opacity: 0.85, marginBottom: 10 }}>
                         Total rango: {secondsToHHMM(totalRangoUsuarioSeg)}
                       </div>
@@ -1032,12 +1004,9 @@ export default function App() {
                                   >
                                     <div style={{ opacity: 0.85, fontWeight: 800 }}>
                                       {r.entrada || "--:--:--"} → {r.salida || "--:--:--"} (
-                                      {secondsToHHMM(tramoSegundos(r))} )
+                                      {secondsToHHMM(tramoSegundos(r))})
                                     </div>
                                     <div style={{ fontWeight: 900 }}>{tipoBonito(r.tipo)}</div>
-                                    <div style={{ opacity: 0.85 }}>
-                                      <span style={{ fontWeight: 900 }}>Fecha:</span> {fmtFechaDDMMYYYY(r.fecha)}
-                                    </div>
                                     <div style={{ opacity: 0.85 }}>
                                       <span style={{ fontWeight: 900 }}>Nota:</span> {r.nota ? r.nota : "-"}
                                     </div>
@@ -1048,24 +1017,25 @@ export default function App() {
                         </div>
                       )}
 
-                      {/* ✅ NUEVO: Export CSV (Empleado) */}
+                      {/* Export CSV usuario */}
                       <div style={{ display: "flex", gap: 12, marginTop: 12, flexWrap: "wrap" }}>
                         <button
                           style={s.btnMainSmall}
                           onClick={() => {
                             const rows = [
-                              ["TOTAL RANGO", "", "", "", secondsToHHMM(totalRangoUsuarioSeg)],
+                              ["TOTAL RANGO", "", "", "", "", secondsToHHMM(totalRangoUsuarioSeg)],
                               [],
-                              ["Fecha", "Entrada", "Salida", "Duración", "Nota"],
+                              ["Fecha", "Entrada", "Salida", "Duración", "Tipo", "Nota"],
                               ...(registrosRango || []).map((r) => [
-                                fmtFechaDDMMYYYY(r.fecha),
+                                fmtFechaDDMMYYYY(r.fecha), // ✅ DD-MM-YYYY en CSV
                                 r.entrada || "",
                                 r.salida || "",
                                 secondsToHHMM(tramoSegundos(r)),
+                                tipoBonito(r.tipo),
                                 r.nota || "",
                               ]),
                             ];
-                            downloadCSV(`mi_control_horario_${desde}_a_${hasta}.csv`, rows);
+                            downloadCSV(`control_horario_${desde}_a_${hasta}.csv`, rows);
                           }}
                           disabled={!registrosRango?.length}
                         >
@@ -1093,7 +1063,12 @@ export default function App() {
             Enviar enlace
           </button>
 
-          {msg && <div style={msg.type === "ok" ? styles.msgOk : styles.msgErr}>{msg.type === "ok" ? "✅ " : "❌ "}{msg.text}</div>}
+          {msg && (
+            <div style={msg.type === "ok" ? styles.msgOk : styles.msgErr}>
+              {msg.type === "ok" ? "✅ " : "❌ "}
+              {msg.text}
+            </div>
+          )}
         </Modal>
       )}
 
@@ -1123,7 +1098,12 @@ export default function App() {
             Guardar contraseña
           </button>
 
-          {msg && <div style={msg.type === "ok" ? styles.msgOk : styles.msgErr}>{msg.type === "ok" ? "✅ " : "❌ "}{msg.text}</div>}
+          {msg && (
+            <div style={msg.type === "ok" ? styles.msgOk : styles.msgErr}>
+              {msg.type === "ok" ? "✅ " : "❌ "}
+              {msg.text}
+            </div>
+          )}
         </Modal>
       )}
 
@@ -1416,16 +1396,29 @@ const styles = {
   filterCol: { flex: 1, minWidth: 160 },
   filterLabel: { fontWeight: 950, opacity: 0.8, marginBottom: 6 },
 
-  // ✅ NUEVO: filas de meses clicables
-  monthRowBtn: {
-    width: "100%",
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
+  // Totales mensuales
+  monthBox: {
+    borderRadius: 18,
+    border: "2px solid rgba(0,0,0,0.06)",
     padding: "12px 14px",
+    background: "#fbfbfb",
+    marginBottom: 12,
+  },
+  monthTitle: { fontWeight: 950, marginBottom: 10, color: "#111827" },
+  monthGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gap: 10,
+  },
+  monthPill: {
     borderRadius: 16,
+    padding: "12px 12px",
     border: "2px solid rgba(0,0,0,0.08)",
-    background: "#ffffff",
+    background: "white",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
     cursor: "pointer",
   },
 
